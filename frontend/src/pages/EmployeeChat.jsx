@@ -5,7 +5,8 @@ import LanguageToggle from "@/components/LanguageToggle";
 import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User } from "lucide-react";
+import { toast } from "sonner";
+import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown } from "lucide-react";
 
 const SUGGESTIONS = [
   "Who is the HR manager?",
@@ -79,7 +80,7 @@ export default function EmployeeChat() {
               setStreamText(acc);
             } else if (evt.type === "done") {
               // finalize
-              setMessages((m) => [...m, { id: `a-${Date.now()}`, role: "assistant", content: acc }]);
+              setMessages((m) => [...m, { id: evt.message_id || `a-${Date.now()}`, role: "assistant", content: acc }]);
               setStreamText("");
               loadConvs();
             }
@@ -251,6 +252,7 @@ export default function EmployeeChat() {
 }
 
 function MessageBubble({ m }) {
+  const [rating, setRating] = useState(null);
   if (m.role === "user") {
     return (
       <div className="flex items-start gap-3 justify-end animate-in-up">
@@ -265,9 +267,25 @@ function MessageBubble({ m }) {
   }
   // Assistant - parse source line
   const content = m.content || "";
-  const sourceMatch = content.match(/Source\s*:\s*(.+)$/im);
-  const body = sourceMatch ? content.slice(0, sourceMatch.index).trim() : content;
-  const source = sourceMatch ? sourceMatch[1].trim() : null;
+  const sourceMatch = content.match(/\*{0,2}Source\*{0,2}\s*:\s*\*{0,2}\s*([^\n]+?)\*{0,2}\s*$/im);
+  let body = sourceMatch ? content.slice(0, sourceMatch.index).trim() : content;
+  // strip trailing dangling markdown bold marker on last line
+  body = body.replace(/\*{1,3}\s*$/, "").trim();
+  const source = sourceMatch ? sourceMatch[1].trim().replace(/\*+$/, "").trim() : null;
+
+  const rate = async (val) => {
+    if (!m.id || m.id.startsWith("a-") || rating === val) return;
+    setRating(val);
+    try {
+      await api.post(`/messages/${m.id}/feedback`, { rating: val });
+      toast.success(val === "up" ? "Thanks for the feedback" : "We'll use this to improve");
+    } catch {
+      setRating(null);
+      toast.error("Could not save feedback");
+    }
+  };
+
+  const canRate = m.id && !m.id.startsWith("a-");
 
   return (
     <div className="flex items-start gap-3 animate-in-up">
@@ -276,12 +294,42 @@ function MessageBubble({ m }) {
       </div>
       <div className="flex-1 space-y-3">
         <div className="text-sm whitespace-pre-wrap leading-relaxed">{body}</div>
-        {source && (
-          <div className="inline-flex items-center gap-2 text-xs rounded-md border border-border bg-card px-2.5 py-1.5 text-muted-foreground">
-            <FileText className="h-3 w-3" strokeWidth={1.5} />
-            <span className="font-medium text-foreground">Source:</span> {source}
-          </div>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {source && (
+            <div className="inline-flex items-center gap-2 text-xs rounded-md border border-border bg-card px-2.5 py-1.5 text-muted-foreground">
+              <FileText className="h-3 w-3" strokeWidth={1.5} />
+              <span className="font-medium text-foreground">Source:</span> {source}
+            </div>
+          )}
+          {canRate && (
+            <div className="inline-flex items-center gap-1 ms-auto">
+              <button
+                data-testid={`thumb-up-${m.id}`}
+                onClick={() => rate("up")}
+                aria-label="Helpful"
+                className={`h-7 w-7 grid place-items-center rounded-md border transition-colors ${
+                  rating === "up"
+                    ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                }`}
+              >
+                <ThumbsUp className="h-3.5 w-3.5" strokeWidth={1.5} />
+              </button>
+              <button
+                data-testid={`thumb-down-${m.id}`}
+                onClick={() => rate("down")}
+                aria-label="Not helpful"
+                className={`h-7 w-7 grid place-items-center rounded-md border transition-colors ${
+                  rating === "down"
+                    ? "border-destructive/50 bg-destructive/10 text-destructive"
+                    : "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                }`}
+              >
+                <ThumbsDown className="h-3.5 w-3.5" strokeWidth={1.5} />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import {
   LayoutDashboard, FileText, Users, Settings2, Workflow, LogOut,
   Sparkles, Upload, Trash2, Calendar, LifeBuoy, FileSpreadsheet, FileType2, Plus,
+  ThumbsUp, ThumbsDown, MessageSquare,
 } from "lucide-react";
 
 const NAV = [
@@ -21,6 +22,7 @@ const NAV = [
   { key: "employees", icon: Users, i18n: "employees" },
   { key: "settings", icon: Settings2, i18n: "ai_settings" },
   { key: "automations", icon: Workflow, i18n: "automations" },
+  { key: "feedback", icon: ThumbsUp, i18n: "feedback" },
 ];
 
 export default function AdminDashboard() {
@@ -100,6 +102,7 @@ export default function AdminDashboard() {
           {tab === "employees" && <EmployeesTab />}
           {tab === "settings" && <SettingsTab />}
           {tab === "automations" && <AutomationsTab />}
+          {tab === "feedback" && <FeedbackTab />}
         </div>
       </main>
     </div>
@@ -408,6 +411,109 @@ function AutomationsTab() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+function FeedbackTab() {
+  const { t } = useLang();
+  const [items, setItems] = useState([]);
+  const [stats, setStats] = useState({ up: 0, down: 0, total: 0 });
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    api.get("/feedback").then(r => setItems(r.data)).catch(() => {});
+    api.get("/feedback/stats").then(r => setStats(r.data)).catch(() => {});
+  }, []);
+
+  const filtered = items.filter(i => filter === "all" ? true : i.rating === filter);
+
+  return (
+    <div className="space-y-6" data-testid="feedback-tab">
+      <div className="grid sm:grid-cols-3 gap-4">
+        <StatBox label={t("total_feedback")} value={stats.total} icon={MessageSquare} tone="muted" />
+        <StatBox label={t("helpful")} value={stats.up} icon={ThumbsUp} tone="up" />
+        <StatBox label={t("not_helpful")} value={stats.down} icon={ThumbsDown} tone="down" />
+      </div>
+
+      <div className="flex gap-2">
+        {[
+          { k: "all", label: t("filter_all") },
+          { k: "down", label: t("filter_down") },
+          { k: "up", label: t("filter_up") },
+        ].map(f => (
+          <button
+            key={f.k}
+            data-testid={`feedback-filter-${f.k}`}
+            onClick={() => setFilter(f.k)}
+            className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+              filter === f.k ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-border p-10 text-center text-muted-foreground">
+          {t("no_feedback")}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((f) => (
+            <div key={f.id} data-testid={`feedback-item-${f.id}`} className="rounded-2xl border border-border bg-card p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  {f.rating === "up" ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 bg-emerald-500/10 rounded-full px-2.5 py-1">
+                      <ThumbsUp className="h-3 w-3" strokeWidth={2} /> {t("helpful")}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-destructive bg-destructive/10 rounded-full px-2.5 py-1">
+                      <ThumbsDown className="h-3 w-3" strokeWidth={2} /> {t("not_helpful")}
+                    </span>
+                  )}
+                  <span className="text-xs text-muted-foreground">{f.user_name} · {f.user_email}</span>
+                </div>
+                <span className="text-xs text-muted-foreground">{new Date(f.updated_at).toLocaleString()}</span>
+              </div>
+              {f.question && (
+                <div className="mt-4">
+                  <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{t("question")}</div>
+                  <div className="text-sm mt-1">{f.question}</div>
+                </div>
+              )}
+              {f.answer && (
+                <div className="mt-3">
+                  <div className="text-[11px] uppercase tracking-widest text-muted-foreground">{t("answer")}</div>
+                  <div className="text-sm mt-1 text-muted-foreground whitespace-pre-wrap line-clamp-4">{f.answer}</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatBox({ label, value, icon: Icon, tone }) {
+  const toneCls = tone === "up"
+    ? "text-emerald-600 bg-emerald-500/10"
+    : tone === "down"
+    ? "text-destructive bg-destructive/10"
+    : "text-muted-foreground bg-secondary";
+  return (
+    <div className="rounded-2xl border border-border bg-card p-6">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">{label}</div>
+        <div className={`h-8 w-8 rounded-lg grid place-items-center ${toneCls}`}>
+          <Icon className="h-4 w-4" strokeWidth={1.5} />
+        </div>
+      </div>
+      <div className="display text-4xl font-bold mt-4">{value}</div>
     </div>
   );
 }

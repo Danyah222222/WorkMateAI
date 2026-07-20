@@ -71,6 +71,11 @@ class EmployeeIn(BaseModel):
     email: EmailStr
 
 
+class FeedbackIn(BaseModel):
+    rating: Literal["up", "down"]
+    comment: Optional[str] = None
+
+
 # ---------------- Auth helpers ----------------
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
@@ -459,20 +464,84 @@ async def chat_stream(payload: ChatRequest, user=Depends(get_current_user)):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         assistant_text = "".join(full)
+        assistant_msg_id = str(uuid.uuid4())
         await db.messages.insert_one({
-            "id": str(uuid.uuid4()),
+            "id": assistant_msg_id,
             "conversation_id": conv_id,
             "role": "assistant",
             "content": assistant_text,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'message_id': assistant_msg_id})}\n\n"
 
     return StreamingResponse(
         event_gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------- Feedback ----------------
+@api.post("/messages/{message_id}/feedback")
+async def submit_feedback(message_id: str, payload: FeedbackIn, user=Depends(get_current_user)):
+    msg = await db.messages.find_one({"id": message_id, "role": "assistant"})
+    if not msg:
+        raise HTTPException(404, "Message not found")
+    # ensure the message belongs to a conversation this user owns
+    conv = await db.conversations.find_one({"id": msg["conversation_id"], "user_id": user["id"]})
+    if not conv:
+        raise HTTPException(403, "Not allowed")
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.feedback.update_one(
+        {"message_id": message_id, "user_id": user["id"]},
+        {"$set": {
+            "id": str(uuid.uuid4()),
+            "message_id": message_id,
+            "conversation_id": msg["conversation_id"],
+            "company_id": user["company_id"],
+            "user_id": user["id"],
+            "user_name": user["name"],
+            "user_email": user["email"],
+            "rating": payload.rating,
+            "comment": payload.comment or "",
+            "updated_at": now,
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "rating": payload.rating}
+
+
+@api.get("/feedback")
+async def list_feedback(user=Depends(require_admin)):
+    items = await db.feedback.find(
+        {"company_id": user["company_id"]}, {"_id": 0}
+    ).sort("updated_at", -1).to_list(500)
+    # enrich with question + answer
+    enriched = []
+    for f in items:
+        assistant = await db.messages.find_one({"id": f["message_id"]}, {"_id": 0})
+        question = None
+        if assistant:
+            # find the user message immediately preceding this assistant reply in the same conversation
+            prior = await db.messages.find(
+                {"conversation_id": f["conversation_id"], "role": "user", "created_at": {"$lt": assistant.get("created_at", "")}},
+                {"_id": 0},
+            ).sort("created_at", -1).to_list(1)
+            question = prior[0]["content"] if prior else None
+        enriched.append({
+            **f,
+            "question": question,
+            "answer": assistant["content"] if assistant else None,
+        })
+    return enriched
+
+
+@api.get("/feedback/stats")
+async def feedback_stats(user=Depends(require_admin)):
+    up = await db.feedback.count_documents({"company_id": user["company_id"], "rating": "up"})
+    down = await db.feedback.count_documents({"company_id": user["company_id"], "rating": "down"})
+    return {"up": up, "down": down, "total": up + down}
 
 
 # ---------------- Automations (placeholder) ----------------
