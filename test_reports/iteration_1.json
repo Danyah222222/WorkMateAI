@@ -1,0 +1,30 @@
+{
+  "summary": "First-finish smoke test of WorkMate AI. All backend APIs (auth, documents, employees, settings PUT, automations, chat SSE stream) return correct data. All 11 frontend flows pass: landing, RTL toggle, login navigation, wrong-cred error, admin login+all sidebar tabs (Dashboard/Knowledge=4 docs/Employees=4/Settings/Automations), employee login, suggested-question chat with streaming response ending in Source badge, and history persistence.",
+  "tested_scope": ["frontend", "backend", "auth", "integration"],
+  "passed": [
+    "GET /api/ health ok",
+    "POST /api/auth/login admin 200 (JWT + user)",
+    "POST /api/auth/login employee 200",
+    "POST /api/auth/login wrong password -> 401 Invalid email or password",
+    "GET /api/documents returns 4 seeded docs (employees.csv, remote_work_policy.pdf, leave_policy.pdf, it_security_guidelines.pdf)",
+    "GET /api/employees returns 4 seeded employees",
+    "GET/PUT /api/settings works (Nova/en/professional persisted)",
+    "GET /api/automations returns Leave Request + IT Support",
+    "POST /api/chat/stream SSE emits meta -> delta chunks -> done, answer ends with 'Source: leave_policy.pdf'",
+    "Landing loads with brand-link, lang toggle sets document.dir=rtl",
+    "Login page: fill-admin-btn and fill-employee-btn helpers work",
+    "Wrong credentials show error toast on UI",
+    "Admin login redirects to /admin; sidebar navigates Dashboard/Knowledge/Employees/Settings/Automations",
+    "Knowledge tab lists all 4 seeded documents",
+    "Employees tab lists all 4 seeded employees",
+    "Automations tab shows both cards",
+    "Employee login redirects to /chat; suggested-0 click triggers streaming AI response with Source badge (LLM integration via Emergent Universal Key working)",
+    "Conversation persists to sidebar history"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true,
+  "notes": "1 console 401 error observed is from the intentional wrong-credentials negative test (expected). Claude Sonnet 4.5 LLM streaming is functional and returns contextually correct answers with sources."
+}
