@@ -1,0 +1,105 @@
+{
+  "project_name": "WorkMate AI",
+  "app_type": "hybrid_fullstack",
+  "theme": "dual_mode",
+  "concept": "Premium Enterprise AI Dashboard with deep RTL support. Fuses the Swiss & High-Contrast archetype for extreme data clarity with Glassmorphism to convey a sense of modern AI intelligence. Eliminates generic 'Bootstrap' symmetry in favor of tension, dynamic spacing, and structural typography.",
+  "typography": {
+    "headings": {
+      "family": "'Cabinet Grotesk', sans-serif",
+      "weights": ["300", "500", "800"],
+      "usage": "Use for all H1, H2, H3, and major marketing callouts. Ensure tight letter spacing (tracking-tight) on sizes above text-3xl. NEVER use Inter for headings."
+    },
+    "body": {
+      "family": "'IBM Plex Sans', sans-serif",
+      "weights": ["400", "500", "600"],
+      "usage": "Use for all dashboard data, chat messages, and UI controls. Provides a technical, authoritative tone suitable for enterprise."
+    },
+    "import_instructions": "Add Google Fonts imports for Cabinet Grotesk (or similar geometric sans like Space Grotesk if Cabinet is unavailable, but prefer General Sans/Cabinet) and IBM Plex Sans in index.css."
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast with Electric Accents",
+    "light_mode": {
+      "background": "#FFFFFF",
+      "surface": "#F8FAFC",
+      "text": "#0F172A",
+      "border": "#E2E8F0",
+      "primary": "#4338CA"
+    },
+    "dark_mode": {
+      "background": "#090A0F",
+      "surface": "#12141D",
+      "text": "#F8FAFC",
+      "border": "#1E2235",
+      "primary": "#6366F1"
+    },
+    "rules": [
+      "No generic gradients. Use flat, structural grayscale for surfaces.",
+      "Never use pure black (#000000). Use deep tinted indigo (#090A0F).",
+      "Primary CTA buttons must use the Electric primary color with high contrast text.",
+      "Glassmorphism surfaces should be highly saturated with 1px delicate borders."
+    ]
+  },
+  "visual_enhancers": {
+    "surfaces": [
+      "Glassmorphism (Nav/Chat Input): backdrop-blur-xl bg-background/70 border border-border/50 shadow-sm",
+      "Dashboard Cards (Neumorphic Edge): Flat background, 1px subtle border, no shadow by default. Hover adds shadow-md and -translate-y-0.5"
+    ],
+    "motion": [
+      "Hover states must alter both background color and text color (e.g., hover:bg-primary hover:text-white).",
+      "Page transitions: simple fade-in.",
+      "Chat messages: stagger entrance animations slightly from bottom up."
+    ]
+  },
+  "layouts": {
+    "general": "Always use mobile-first responsive grids. Max-width containers for marketing, full-width (w-full) for dashboard.",
+    "landing_page": "Use overlapping elements, large typography, and asymmetrical bento grids for features.",
+    "dashboard": "High Density Grid. Sidebar on the left (or right in RTL), main content area spanning the rest. Use tight gaps (gap-4 or gap-6).",
+    "chat_interface": "Main column (max-w-4xl) centered or side-by-side canvas if references are open. Input must be pinned to bottom using fixed or sticky positioning with glassmorphism to let scrolled text blur behind it."
+  },
+  "rtl_guidelines": {
+    "critical_instruction": "The app requires a bilingual English/Arabic toggle. You MUST use logical CSS properties in Tailwind.",
+    "rules": [
+      "Never use pl-, pr-, ml-, mr-, border-l, or border-r.",
+      "ALWAYS use ps- (padding-inline-start), pe- (padding-inline-end), ms-, me-, border-s, border-e.",
+      "Toggle mechanism: When language changes to AR, update document.documentElement.dir = 'rtl' and document.documentElement.lang = 'ar'. Tailwind handles the logical properties automatically.",
+      "Ensure icons (like back arrows) flip in RTL mode using rtl:-scale-x-100."
+    ]
+  },
+  "component_guidelines": {
+    "buttons": "Pill-shaped (rounded-full) for landing page CTAs, sharp/subtle roundness (rounded-md) for dashboard. High contrast text.",
+    "forms": "Use Shadcn components. Inputs must have clear focus states (focus:ring-2 focus:ring-primary).",
+    "chat": "Messages should NOT be generic chat bubbles. Render AI responses as transparent blocks with rich text formatting. User messages as subtle gray/tinted bubbles aligned to the end. Include 'Suggested Follow-ups' as small pill buttons.",
+    "toasts": "Use 'sonner' for all notifications. Position top-right (or top-left in RTL)."
+  },
+  "accessibility": {
+    "testing": "All interactive elements (buttons, inputs, language toggles, chat submit) MUST include a 'data-testid' attribute (e.g., data-testid='lang-toggle-btn').",
+    "contrast": "Maintain 4.5:1 ratio for text. Active focus rings must be highly visible."
+  },
+  "image_urls": {
+    "landing_hero_bg": {
+      "url": "https://images.unsplash.com/photo-1758073519996-6d3c63b4922c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzN8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMGRhdGElMjBuZXR3b3JrJTIwZ2xvd2luZ3xlbnwwfHx8fDE3ODQ1MTM0NjJ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract blue glowing dots forming wave patterns, perfect for AI technology vibe."
+    },
+    "landing_team": {
+      "url": "https://images.unsplash.com/photo-1568992688065-536aad8a12f6?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDB8MHwxfHNlYXJjaHw0fHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWFtJTIwY29sbGFib3JhdGlvbnxlbnwwfHx8fDE3ODQ1MTM0NjJ8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Modern office team collaborating."
+    },
+    "dashboard_automations": {
+      "url": "https://images.pexels.com/photos/10325707/pexels-photo-10325707.png?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Abstract orange lines, use as decorative background for automation workflow cards."
+    }
+  },
+  "instructions_to_main_agent": [
+    "You are building a React.js application using .js/.jsx files (NO TypeScript .tsx files).",
+    "Initialize React Router for Navigation: /, /login, /admin, /chat.",
+    "Setup language state context to manage EN/AR toggle globally.",
+    "Update tailwind.config.js to include Cabinet Grotesk and IBM Plex Sans in the font families.",
+    "Override index.css base variables to match the colors defined in this guideline.",
+    "Implement the Chat Interface using a side-by-side canvas approach if source references are clicked, otherwise keep a centered max-w-4xl column.",
+    "Admin Dashboard must have a clear sidebar navigation (Dashboard, Knowledge, Employees, Settings, Automations).",
+    "Use lucide-react for all iconography. Apply strokeWidth={1.5} for a more refined look.",
+    "Do NOT use HTML `<select>` or `<input type='date'>`. Use Shadcn equivalents if possible, or build custom accessible dropdowns.",
+    "Ensure the entire app container does NOT have text-align: center applied globally (remove from App.css if present)."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": "Do not make generic centered layouts or sloppy gradients. Create depth through layered design elements with z-index hierarchy. Ensure all interactive components have proper hover/focus states and include data-testid. DO NOT use complete transparent backgrounds in headers or overlays with content underneath."
+}
