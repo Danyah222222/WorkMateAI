@@ -547,8 +547,8 @@ async def feedback_stats(user=Depends(require_admin)):
 # ---------------- Automations (placeholder) ----------------
 import requests as _requests
 
-N8N_LEAVE_WEBHOOK = "https://danyah.app.n8n.cloud/webhook-test/leave-request"
-N8N_IT_SUPPORT_WEBHOOK = "https://danyah.app.n8n.cloud/webhook-test/it-support"
+N8N_LEAVE_WEBHOOK = "https://danyah.app.n8n.cloud/webhook/leave-request"
+N8N_IT_SUPPORT_WEBHOOK = "https://danyah.app.n8n.cloud/webhook/it-support"
 
 
 @api.post("/webhooks/leave-request")

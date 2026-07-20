@@ -1,0 +1,49 @@
+{
+  "summary": "Verified backend n8n webhook URLs switched from TEST to PRODUCTION. Both /api/webhooks/leave-request and /api/webhooks/it-support now forward to https://danyah.app.n8n.cloud/webhook/... (no /webhook-test/ remains). Payloads are unchanged and correct. Auth requirement enforced. Frontend regression clean: login (admin + employee), session persistence on refresh, both webhook header buttons render and fire the correct API calls, backend error is surfaced verbatim as a toast. All 15 backend pytest cases pass.",
+  "tested_scope": ["backend-webhooks", "backend-regression", "frontend-integration"],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "passed": [
+    "grep '/webhook-test/' /app/backend/server.py -> no matches",
+    "server.py contains both PRODUCTION URLs: /webhook/leave-request and /webhook/it-support",
+    "GET /api/ -> 200 {service: WorkMate AI, status: ok}",
+    "POST /api/auth/login admin -> 200, role=admin",
+    "POST /api/auth/login employee (sarah) -> 200, role=employee",
+    "GET /api/auth/me -> 200 correct profile",
+    "POST /api/webhooks/leave-request WITHOUT auth -> 401/403",
+    "POST /api/webhooks/it-support WITHOUT auth -> 401/403",
+    "POST /api/webhooks/leave-request (auth) -> 200 with payload_sent = {employee: 'Ahmed Ali', department: 'Engineering', request: 'Vacation', dates: 'August 1 - August 5'}. Response text does NOT contain 'In test mode' / 'Listen for test event'. n8n hint literally reads 'production URL' confirming we hit the prod endpoint.",
+    "POST /api/webhooks/it-support (auth) -> 200 with payload_sent = {employee: 'Ahmed Ali', department: 'Engineering', issue: \"Laptop won't connect to Wi-Fi\", priority: 'Medium'}. Same 'production URL' evidence from n8n.",
+    "n8n currently returns 404 'workflow must be active for a production URL to run' — EXPECTED (workflow toggled off) and proves prod URL is being called.",
+    "GET /api/employees (auth) -> 200, 4 seeded employees present",
+    "GET /api/documents (auth) -> 200, 4 seeded documents present",
+    "GET/PUT /api/settings -> 200",
+    "GET /api/feedback/stats admin -> 200 {up, down, total}",
+    "POST /api/chat/stream 'Who is the HR manager?' -> streams deltas and terminates with done event",
+    "UI: login page loads, employee login -> /chat",
+    "UI: refresh on /chat -> session persists",
+    "UI: header shows submit-leave-request-btn AND submit-it-support-btn",
+    "UI: clicking submit-leave-request-btn fires POST /api/webhooks/leave-request and shows toast with exact backend error message ('The requested webhook \"POST leave-request\" is not registered.')",
+    "UI: clicking submit-it-support-btn fires POST /api/webhooks/it-support and shows toast with exact backend error message"
+  ],
+  "failed": [],
+  "test_report_links": [
+    "/app/backend/tests/test_webhooks_prod.py",
+    "/app/test_reports/pytest/webhooks_prod.xml"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_webhooks_prod.py (new)"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% (webhook integration + session persistence)"},
+  "test_credentials": "admin@technova.com / admin123 ; sarah@technova.com / employee123",
+  "seed_data_creation": "None - reused seeded TechNova data",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "critical_code_review_comments": [
+    "Backend swap from /webhook-test/ to /webhook/ implemented correctly on both constants. Payload structures unchanged. Auth dependency intact via Depends(get_current_user).",
+    "Optional nit: _requests.post is a sync call inside an async endpoint. It works and 15s timeout is reasonable, but for production readiness consider httpx.AsyncClient to avoid blocking the event loop under load. Not a bug for the current MVP.",
+    "n8n workflows are currently INACTIVE (toggled off) — n8n returns 404 with the exact hint 'The workflow must be active for a production URL to run successfully'. This is a config action outside our repo (turn on the workflows in n8n) and is NOT a code bug.",
+    "Frontend EmployeeChat correctly surfaces res.data.response.message as a toast so users see the n8n hint verbatim. Good UX for hackathon demo."
+  ],
+  "context_for_next_testing_agent": "Two constants (N8N_LEAVE_WEBHOOK, N8N_IT_SUPPORT_WEBHOOK) in /app/backend/server.py lines 550-551 point to /webhook/... (production). Test file /app/backend/tests/test_webhooks_prod.py covers URL/payload/auth verification plus regression on health, login, /auth/me, employees, documents, settings, feedback and chat streaming. Re-run: `pytest /app/backend/tests/ -v`. If n8n workflows are activated later, the 'response.ok' will become true and toasts will show success messages."
+}
