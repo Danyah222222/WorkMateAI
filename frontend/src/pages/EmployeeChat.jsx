@@ -6,7 +6,7 @@ import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
-import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown } from "lucide-react";
+import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck } from "lucide-react";
 
 const SUGGESTIONS = [
   "Who is the HR manager?",
@@ -97,6 +97,24 @@ export default function EmployeeChat() {
 
   const newChat = () => { setActiveId(null); setMessages([]); };
 
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false);
+  const submitLeaveTest = async () => {
+    setLeaveSubmitting(true);
+    try {
+      const res = await api.post("/webhooks/leave-request");
+      if (res.data?.ok) {
+        toast.success("Leave request submitted successfully");
+      } else {
+        const detail = res.data?.response?.message || `n8n returned ${res.data?.status_code}`;
+        toast.error(`Webhook responded: ${detail}`);
+      }
+    } catch (e) {
+      toast.error(`Failed to submit leave request: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setLeaveSubmitting(false);
+    }
+  };
+
   const removeConv = async (id, e) => {
     e.stopPropagation();
     await api.delete(`/conversations/${id}`);
@@ -167,7 +185,20 @@ export default function EmployeeChat() {
             <span className="display font-bold">WorkMate<span className="text-primary">.</span>AI</span>
           </div>
           <div className="hidden md:block text-sm text-muted-foreground">Your private company assistant</div>
-          <LanguageToggle />
+          <div className="flex items-center gap-2">
+            <Button
+              data-testid="submit-leave-request-btn"
+              variant="outline"
+              size="sm"
+              onClick={submitLeaveTest}
+              disabled={leaveSubmitting}
+              className="rounded-full gap-2"
+            >
+              <CalendarCheck className="h-4 w-4" strokeWidth={1.5} />
+              {leaveSubmitting ? "Submitting…" : "Submit Leave Request"}
+            </Button>
+            <LanguageToggle />
+          </div>
         </header>
 
         <div ref={scrollRef} className="flex-1 overflow-auto">

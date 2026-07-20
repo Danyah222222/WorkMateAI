@@ -545,6 +545,30 @@ async def feedback_stats(user=Depends(require_admin)):
 
 
 # ---------------- Automations (placeholder) ----------------
+import requests as _requests
+
+N8N_LEAVE_WEBHOOK = "https://danyah.app.n8n.cloud/webhook-test/leave-request"
+
+
+@api.post("/webhooks/leave-request")
+async def leave_request_webhook(user=Depends(get_current_user)):
+    payload = {
+        "employee": "Ahmed Ali",
+        "department": "Engineering",
+        "request": "Vacation",
+        "dates": "August 1 - August 5",
+    }
+    try:
+        r = _requests.post(N8N_LEAVE_WEBHOOK, json=payload, timeout=15)
+    except Exception as e:
+        raise HTTPException(502, f"Webhook unreachable: {e}")
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": r.text}
+    return {"status_code": r.status_code, "ok": r.ok, "response": data, "payload_sent": payload}
+
+
 @api.get("/automations")
 async def get_automations(user=Depends(get_current_user)):
     return [
