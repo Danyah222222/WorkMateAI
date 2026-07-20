@@ -548,6 +548,10 @@ async def feedback_stats(user=Depends(require_admin)):
 import requests as _requests
 
 N8N_LEAVE_WEBHOOK = "https://danyah.app.n8n.cloud/webhook-test/leave-request"
+N8N_IT_SUPPORT_WEBHOOK = os.environ.get(
+    "N8N_IT_SUPPORT_WEBHOOK",
+    "https://danyah.app.n8n.cloud/webhook-test/it-support",
+)
 
 
 @api.post("/webhooks/leave-request")
@@ -560,6 +564,25 @@ async def leave_request_webhook(user=Depends(get_current_user)):
     }
     try:
         r = _requests.post(N8N_LEAVE_WEBHOOK, json=payload, timeout=15)
+    except Exception as e:
+        raise HTTPException(502, f"Webhook unreachable: {e}")
+    try:
+        data = r.json()
+    except Exception:
+        data = {"raw": r.text}
+    return {"status_code": r.status_code, "ok": r.ok, "response": data, "payload_sent": payload}
+
+
+@api.post("/webhooks/it-support")
+async def it_support_webhook(user=Depends(get_current_user)):
+    payload = {
+        "employee": "Ahmed Ali",
+        "department": "Engineering",
+        "issue": "Laptop won't connect to Wi-Fi",
+        "priority": "Medium",
+    }
+    try:
+        r = _requests.post(N8N_IT_SUPPORT_WEBHOOK, json=payload, timeout=15)
     except Exception as e:
         raise HTTPException(502, f"Webhook unreachable: {e}")
     try:

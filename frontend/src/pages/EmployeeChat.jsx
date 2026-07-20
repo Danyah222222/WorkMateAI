@@ -6,7 +6,7 @@ import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
-import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck } from "lucide-react";
+import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck, LifeBuoy } from "lucide-react";
 
 const SUGGESTIONS = [
   "Who is the HR manager?",
@@ -115,6 +115,24 @@ export default function EmployeeChat() {
     }
   };
 
+  const [itSubmitting, setItSubmitting] = useState(false);
+  const submitItSupportTicket = async () => {
+    setItSubmitting(true);
+    try {
+      const res = await api.post("/webhooks/it-support");
+      if (res.data?.ok) {
+        toast.success("IT support ticket submitted successfully");
+      } else {
+        const detail = res.data?.response?.message || `n8n returned ${res.data?.status_code}`;
+        toast.error(`Webhook responded: ${detail}`);
+      }
+    } catch (e) {
+      toast.error(`Failed to submit IT ticket: ${e.response?.data?.detail || e.message}`);
+    } finally {
+      setItSubmitting(false);
+    }
+  };
+
   const removeConv = async (id, e) => {
     e.stopPropagation();
     await api.delete(`/conversations/${id}`);
@@ -196,6 +214,17 @@ export default function EmployeeChat() {
             >
               <CalendarCheck className="h-4 w-4" strokeWidth={1.5} />
               {leaveSubmitting ? "Submitting…" : "Submit Leave Request"}
+            </Button>
+            <Button
+              data-testid="submit-it-support-btn"
+              variant="outline"
+              size="sm"
+              onClick={submitItSupportTicket}
+              disabled={itSubmitting}
+              className="rounded-full gap-2"
+            >
+              <LifeBuoy className="h-4 w-4" strokeWidth={1.5} />
+              {itSubmitting ? "Submitting…" : "Submit IT Support Ticket"}
             </Button>
             <LanguageToggle />
           </div>
