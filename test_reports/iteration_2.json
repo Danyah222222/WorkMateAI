@@ -1,0 +1,63 @@
+{
+  "summary": "PRIMARY BUG (session persistence on refresh) is FIXED and verified. Backend pytest 16/16 pass. Frontend session flow 10/10 pass: admin & employee both stay authenticated after browser refresh (on /admin and /chat), token unchanged in localStorage, navigation through all 6 sidebar tabs (dashboard/knowledge/employees/settings/automations/feedback) never bounces to /login, logout clears wm_token, wrong credentials show error toast and do not set a token. Employee conversation history persists across refresh (8 conversations reloaded and clickable).",
+  "tested_scope": ["backend", "frontend", "auth", "session-persistence"],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed": [
+    "GET /api/ health 200",
+    "POST /api/auth/login admin -> 200 with JWT + user (role=admin)",
+    "POST /api/auth/login employee -> 200 with JWT + user (role=employee)",
+    "POST /api/auth/login wrong-password -> 401 'Invalid email or password'",
+    "POST /api/auth/login unknown-email -> 401",
+    "GET /api/auth/me with valid admin token -> 200 correct profile",
+    "GET /api/auth/me with valid employee token -> 200 correct profile",
+    "GET /api/auth/me without token -> 401/403",
+    "GET /api/auth/me with garbage token -> 401",
+    "GET /api/documents (auth) -> 200 (4 seeded docs)",
+    "GET /api/employees (auth) -> 200 (4 seeded)",
+    "GET /api/settings (auth) -> 200",
+    "GET /api/automations (auth) -> 200 (2 items)",
+    "GET /api/stats admin -> 200, employee -> 403",
+    "GET /api/feedback admin -> 200, employee -> 403",
+    "GET /api/conversations (employee) -> 200",
+    "UI: admin login -> lands on /admin",
+    "UI: refresh on /admin -> stays on /admin (BUG FIX VERIFIED)",
+    "UI: localStorage.wm_token unchanged after refresh (bootstrap /auth/me succeeded without clearing token)",
+    "UI: nav clicks to dashboard/knowledge/employees/settings/automations/feedback do NOT redirect to /login",
+    "UI: refresh on admin subroute stays authenticated",
+    "UI: logout redirects to /login and removes wm_token",
+    "UI: employee login -> lands on /chat",
+    "UI: refresh on /chat -> stays on /chat (BUG FIX VERIFIED)",
+    "UI: employee conversation history sidebar populated after refresh (8 convs), clicking loads messages",
+    "UI: wrong credentials show error toast, stay on /login, no token stored",
+    "UI: landing page loads, EN/AR language toggle flips document.dir to rtl"
+  ],
+  "failed": [],
+  "test_report_links": [
+    "/app/backend/tests/test_auth_session.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auth_session.py (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100% (session persistence flows)"},
+  "test_credentials": "admin@technova.com / admin123 ; sarah@technova.com / employee123",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "critical_code_review_comments": [
+    "AuthContext bootstrap retry-with-backoff correctly implemented: 3 attempts, only clears wm_token on real 401. Global 401 interceptor also present. This is exactly the right RCA fix.",
+    "Backend seed_technova() is properly idempotent (returns early if company slug 'technova' exists).",
+    "Minor: /api/auth/me with no Authorization header returns 403 (FastAPI HTTPBearer default) instead of 401. The AuthContext only clears the token on 401, so a bearer-less request would keep the token in place. Not a bug because the request interceptor always attaches the token from localStorage when it exists — just noting for completeness.",
+    "Minor observation (not the bug being fixed): AdminDashboard stats cards briefly showed 0/0/0 in one test run right after a language toggle; /api/stats API itself returns correct 4/4/8. Could be a UI mount race where /stats is fetched before axios interceptor picks up the token — worth a targeted look but does not affect the auth-persistence fix."
+  ],
+  "rca_of_bug_and_fix": {
+    "root_cause": "Previous AuthContext removed wm_token from localStorage on ANY error from GET /auth/me on mount. A transient 502/network blip during container warm-up on refresh caused a silent sign-out.",
+    "fix_applied_by_main_agent": "Bootstrap /auth/me now retries up to 3 times with exponential-ish backoff (700ms, 1400ms) and ONLY removes the token on an explicit 401 response. Added a global axios response interceptor that clears session and forces re-login on any 401 from any subsequent API call.",
+    "verification": "Reproduced original scenario by logging in and refreshing multiple times as both admin and employee — user stays authenticated, no bounce to /login, token stable in localStorage."
+  },
+  "context_for_next_testing_agent": "Bug is fixed. If retesting, use /app/backend/tests/test_auth_session.py for regression. For UI, exercise login -> refresh cycle multiple times as both admin (/admin) and employee (/chat). Only remove wm_token via logout or genuine 401."
+}
