@@ -65,15 +65,6 @@ export default function Landing() {
               </Link>
             </div>
 
-            {/* Demo credentials chips */}
-            <div className="flex flex-wrap gap-2 pt-2">
-              <div className="text-xs rounded-md border border-border bg-card/60 px-3 py-2 font-mono">
-                <span className="text-muted-foreground">{t("demo_admin")}: </span>admin@technova.com / admin123
-              </div>
-              <div className="text-xs rounded-md border border-border bg-card/60 px-3 py-2 font-mono">
-                <span className="text-muted-foreground">{t("demo_employee")}: </span>sarah@technova.com / employee123
-              </div>
-            </div>
           </div>
 
           <div className="lg:col-span-5 relative animate-in-up" style={{ animationDelay: "150ms" }}>

@@ -10,7 +10,14 @@ import EmployeeChat from "@/pages/EmployeeChat";
 
 function Protected({ children, role }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="p-10 text-muted-foreground">Loading…</div>;
+  if (loading) return (
+    <div className="min-h-screen grid place-items-center bg-background text-muted-foreground">
+      <div className="flex items-center gap-3 text-sm">
+        <span className="h-2 w-2 rounded-full bg-primary pulse-dot" />
+        Loading your workspace…
+      </div>
+    </div>
+  );
   if (!user) return <Navigate to="/login" replace />;
   if (role && user.role !== role) {
     return <Navigate to={user.role === "admin" ? "/admin" : "/chat"} replace />;

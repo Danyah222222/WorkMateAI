@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { Sparkles, ArrowLeft, User, ShieldCheck } from "lucide-react";
+import { Sparkles, ArrowLeft } from "lucide-react";
 
 export default function Login() {
   const { t } = useLang();
@@ -30,8 +30,6 @@ export default function Login() {
       setLoading(false);
     }
   };
-
-  const fill = (e, p) => { setEmail(e); setPassword(p); };
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-background text-foreground">
@@ -108,35 +106,8 @@ export default function Login() {
             </div>
 
             <Button data-testid="login-submit-btn" type="submit" disabled={loading} className="w-full h-11 rounded-md">
-              {loading ? "…" : t("login_btn")}
+              {loading ? "Signing in…" : t("login_btn")}
             </Button>
-
-            <div className="grid grid-cols-2 gap-2 pt-2">
-              <button
-                type="button"
-                data-testid="fill-admin-btn"
-                onClick={() => fill("admin@technova.com", "admin123")}
-                className="rounded-md border border-border bg-card p-3 text-start hover:border-primary transition-colors"
-              >
-                <div className="flex items-center gap-2 text-xs font-medium">
-                  <ShieldCheck className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
-                  {t("demo_admin")}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1 font-mono truncate">admin@technova.com</div>
-              </button>
-              <button
-                type="button"
-                data-testid="fill-employee-btn"
-                onClick={() => fill("sarah@technova.com", "employee123")}
-                className="rounded-md border border-border bg-card p-3 text-start hover:border-primary transition-colors"
-              >
-                <div className="flex items-center gap-2 text-xs font-medium">
-                  <User className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
-                  {t("demo_employee")}
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1 font-mono truncate">sarah@technova.com</div>
-              </button>
-            </div>
           </form>
         </div>
       </div>

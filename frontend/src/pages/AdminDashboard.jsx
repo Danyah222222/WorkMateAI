@@ -13,7 +13,7 @@ import { toast } from "sonner";
 import {
   LayoutDashboard, FileText, Users, Settings2, Workflow, LogOut,
   Sparkles, Upload, Trash2, Calendar, LifeBuoy, FileSpreadsheet, FileType2, Plus,
-  ThumbsUp, ThumbsDown, MessageSquare,
+  ThumbsUp, ThumbsDown, MessageSquare, AlertTriangle, RefreshCw,
 } from "lucide-react";
 
 const NAV = [
@@ -30,10 +30,19 @@ export default function AdminDashboard() {
   const { t } = useLang();
   const [tab, setTab] = useState("dashboard");
   const [stats, setStats] = useState({ employees: 0, documents: 0, conversations: 0 });
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [statsError, setStatsError] = useState(null);
 
-  useEffect(() => {
-    api.get("/stats").then(r => setStats(r.data)).catch(() => {});
-  }, [tab]);
+  const loadStats = () => {
+    setStatsError(null);
+    setStatsLoading(true);
+    return api.get("/stats")
+      .then(r => setStats(r.data))
+      .catch(() => setStatsError("Failed to load dashboard stats."))
+      .finally(() => setStatsLoading(false));
+  };
+
+  useEffect(() => { loadStats(); }, [tab]);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground" data-testid="admin-dashboard">
@@ -97,7 +106,7 @@ export default function AdminDashboard() {
         </header>
 
         <div className="p-6 flex-1 overflow-auto">
-          {tab === "dashboard" && <DashboardHome stats={stats} setTab={setTab} />}
+          {tab === "dashboard" && <DashboardHome stats={stats} setTab={setTab} loading={statsLoading} loadError={statsError} onRetry={loadStats} />}
           {tab === "knowledge" && <KnowledgeTab />}
           {tab === "employees" && <EmployeesTab />}
           {tab === "settings" && <SettingsTab />}
@@ -109,7 +118,7 @@ export default function AdminDashboard() {
   );
 }
 
-function DashboardHome({ stats, setTab }) {
+function DashboardHome({ stats, setTab, loading, loadError, onRetry }) {
   const { t } = useLang();
   const cards = [
     { label: t("stat_employees"), val: stats.employees, icon: Users, to: "employees" },
@@ -118,6 +127,7 @@ function DashboardHome({ stats, setTab }) {
   ];
   return (
     <div className="space-y-6">
+      {loadError && <ErrorState message={loadError} onRetry={onRetry} />}
       <div className="grid sm:grid-cols-3 gap-4">
         {cards.map((c, i) => {
           const Icon = c.icon;
@@ -132,13 +142,17 @@ function DashboardHome({ stats, setTab }) {
                 <div className="text-sm text-muted-foreground">{c.label}</div>
                 <Icon className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} />
               </div>
-              <div className="display text-4xl font-bold mt-4">{c.val}</div>
+              {loading ? (
+                <div className="mt-4 h-10 w-16 rounded bg-secondary animate-pulse" />
+              ) : (
+                <div className="display text-4xl font-bold mt-4">{c.val}</div>
+              )}
             </button>
           );
         })}
       </div>
       <div className="rounded-2xl border border-border bg-card p-8">
-        <h3 className="display text-2xl font-bold tracking-tight">Welcome back 👋</h3>
+        <h3 className="display text-2xl font-bold tracking-tight">Welcome back</h3>
         <p className="text-muted-foreground mt-2 max-w-2xl">
           Upload company files, manage your directory, and configure your AI assistant. Employees can start chatting the moment your knowledge is in place.
         </p>
@@ -151,9 +165,17 @@ function KnowledgeTab() {
   const { t } = useLang();
   const [docs, setDocs] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const fileRef = useRef(null);
 
-  const load = () => api.get("/documents").then(r => setDocs(r.data)).catch(() => {});
+  const load = () => {
+    setLoadError(null);
+    return api.get("/documents")
+      .then(r => setDocs(r.data))
+      .catch(() => setLoadError("Failed to load documents."))
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { load(); }, []);
 
   const handleUpload = async (files) => {
@@ -223,10 +245,31 @@ function KnowledgeTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {docs.length === 0 && (
-              <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-8">No files yet.</TableCell></TableRow>
+            {loading && (
+              <TableRow><TableCell colSpan={4}><SkeletonRows cols={4} /></TableCell></TableRow>
             )}
-            {docs.map((d) => (
+            {!loading && loadError && (
+              <TableRow>
+                <TableCell colSpan={4}>
+                  <ErrorState message={loadError} onRetry={load} />
+                </TableCell>
+              </TableRow>
+            )}
+            {!loading && !loadError && docs.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={4}>
+                  <EmptyState
+                    icon={FileText}
+                    title="No documents yet"
+                    description="Upload company policies or a CSV of your employee directory to unlock the AI assistant."
+                    ctaLabel="Upload your first file"
+                    onCta={() => fileRef.current?.click()}
+                    testId="empty-documents"
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+            {!loading && !loadError && docs.map((d) => (
               <TableRow key={d.id} data-testid={`doc-row-${d.id}`}>
                 <TableCell className="font-medium flex items-center gap-2">
                   {d.file_type === "csv" ? <FileSpreadsheet className="h-4 w-4 text-emerald-500" strokeWidth={1.5} /> : <FileType2 className="h-4 w-4 text-rose-500" strokeWidth={1.5} />}
@@ -253,8 +296,16 @@ function EmployeesTab() {
   const [rows, setRows] = useState([]);
   const [form, setForm] = useState({ name: "", department: "", position: "", email: "" });
   const [adding, setAdding] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
-  const load = () => api.get("/employees").then(r => setRows(r.data));
+  const load = () => {
+    setLoadError(null);
+    return api.get("/employees")
+      .then(r => setRows(r.data))
+      .catch(() => setLoadError("Failed to load employees."))
+      .finally(() => setLoading(false));
+  };
   useEffect(() => { load(); }, []);
 
   const add = async (e) => {
@@ -307,7 +358,29 @@ function EmployeesTab() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((r) => (
+            {loading && (
+              <TableRow><TableCell colSpan={5}><SkeletonRows cols={5} /></TableCell></TableRow>
+            )}
+            {!loading && loadError && (
+              <TableRow>
+                <TableCell colSpan={5}><ErrorState message={loadError} onRetry={load} /></TableCell>
+              </TableRow>
+            )}
+            {!loading && !loadError && rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <EmptyState
+                    icon={Users}
+                    title="No employees yet"
+                    description="Add your first employee to build the company directory."
+                    ctaLabel="Add employee"
+                    onCta={() => setAdding(true)}
+                    testId="empty-employees"
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+            {!loading && !loadError && rows.map((r) => (
               <TableRow key={r.id} data-testid={`emp-row-${r.id}`}>
                 <TableCell className="font-medium">{r.name}</TableCell>
                 <TableCell>{r.department}</TableCell>
@@ -331,9 +404,18 @@ function SettingsTab() {
   const { t } = useLang();
   const [s, setS] = useState({ assistant_name: "Nova", language: "en", personality: "professional" });
   const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    api.get("/settings").then(r => r.data && setS(r.data));
-  }, []);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+
+  const load = () => {
+    setLoadError(null);
+    setLoading(true);
+    return api.get("/settings")
+      .then(r => r.data && setS(r.data))
+      .catch(() => setLoadError("Failed to load settings."))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
 
   const save = async () => {
     setSaving(true);
@@ -341,9 +423,23 @@ function SettingsTab() {
       await api.put("/settings", s);
       toast.success(t("saved"));
     } catch (e) {
-      toast.error("Save failed");
+      toast.error(e.response?.data?.detail || "Failed to save settings");
     } finally { setSaving(false); }
   };
+
+  if (loading) {
+    return (
+      <div className="max-w-2xl rounded-2xl border border-border bg-card p-8 space-y-6">
+        <div className="h-6 w-40 bg-secondary rounded animate-pulse" />
+        <div className="h-10 bg-secondary rounded animate-pulse" />
+        <div className="grid sm:grid-cols-2 gap-6">
+          <div className="h-10 bg-secondary rounded animate-pulse" />
+          <div className="h-10 bg-secondary rounded animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+  if (loadError) return <ErrorState message={loadError} onRetry={load} />;
 
   return (
     <div className="max-w-2xl rounded-2xl border border-border bg-card p-8 space-y-6" data-testid="settings-form">
@@ -374,7 +470,7 @@ function SettingsTab() {
         </div>
       </div>
       <div className="flex justify-end">
-        <Button onClick={save} disabled={saving} data-testid="save-settings-btn">{saving ? "…" : t("save")}</Button>
+        <Button onClick={save} disabled={saving} data-testid="save-settings-btn">{saving ? "Saving…" : t("save")}</Button>
       </div>
     </div>
   );
@@ -421,11 +517,21 @@ function FeedbackTab() {
   const [items, setItems] = useState([]);
   const [stats, setStats] = useState({ up: 0, down: 0, total: 0 });
   const [filter, setFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
 
-  useEffect(() => {
-    api.get("/feedback").then(r => setItems(r.data)).catch(() => {});
-    api.get("/feedback/stats").then(r => setStats(r.data)).catch(() => {});
-  }, []);
+  const load = () => {
+    setLoadError(null);
+    setLoading(true);
+    return Promise.all([
+      api.get("/feedback").then(r => setItems(r.data)),
+      api.get("/feedback/stats").then(r => setStats(r.data)),
+    ])
+      .catch(() => setLoadError("Failed to load feedback."))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
 
   const filtered = items.filter(i => filter === "all" ? true : i.rating === filter);
 
@@ -456,10 +562,19 @@ function FeedbackTab() {
         ))}
       </div>
 
-      {filtered.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border p-10 text-center text-muted-foreground">
-          {t("no_feedback")}
+      {loadError ? (
+        <ErrorState message={loadError} onRetry={load} />
+      ) : loading ? (
+        <div className="space-y-3">
+          {[0,1,2].map(i => <div key={i} className="h-24 rounded-2xl bg-secondary/60 animate-pulse" />)}
         </div>
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={MessageSquare}
+          title={t("no_feedback")}
+          description="Once employees start rating AI answers, you'll see the results here."
+          testId="empty-feedback"
+        />
       ) : (
         <div className="space-y-3">
           {filtered.map((f) => (
@@ -517,3 +632,51 @@ function StatBox({ label, value, icon: Icon, tone }) {
     </div>
   );
 }
+
+function SkeletonRows({ cols = 4, rows = 3 }) {
+  return (
+    <div className="py-4 space-y-3">
+      {Array.from({ length: rows }).map((_, r) => (
+        <div key={r} className="grid gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))` }}>
+          {Array.from({ length: cols }).map((_, c) => (
+            <div key={c} className="h-4 rounded bg-secondary animate-pulse" />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyState({ icon: Icon = FileText, title, description, ctaLabel, onCta, testId }) {
+  return (
+    <div data-testid={testId} className="flex flex-col items-center justify-center text-center py-12 px-6">
+      <div className="h-12 w-12 rounded-2xl bg-primary/10 text-primary grid place-items-center mb-4">
+        <Icon className="h-5 w-5" strokeWidth={1.5} />
+      </div>
+      <div className="font-semibold">{title}</div>
+      {description && <div className="text-sm text-muted-foreground mt-1 max-w-md">{description}</div>}
+      {ctaLabel && onCta && (
+        <Button data-testid={testId ? `${testId}-cta` : undefined} onClick={onCta} className="rounded-full mt-5 gap-2">
+          <Plus className="h-4 w-4" strokeWidth={2} /> {ctaLabel}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function ErrorState({ message, onRetry }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-10 px-6">
+      <div className="h-10 w-10 rounded-full bg-destructive/10 text-destructive grid place-items-center mb-3">
+        <AlertTriangle className="h-4 w-4" strokeWidth={1.5} />
+      </div>
+      <div className="font-medium">{message || "Something went wrong."}</div>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry} className="mt-4 rounded-full gap-2" data-testid="error-retry-btn">
+          <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} /> Try again
+        </Button>
+      )}
+    </div>
+  );
+}
+
