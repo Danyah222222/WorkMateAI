@@ -5,6 +5,8 @@ import { LanguageProvider } from "@/contexts/LanguageContext";
 import { Toaster } from "@/components/ui/sonner";
 import Landing from "@/pages/Landing";
 import Login from "@/pages/Login";
+import Register from "@/pages/Register";
+import AcceptInvite from "@/pages/AcceptInvite";
 import AdminDashboard from "@/pages/AdminDashboard";
 import EmployeeChat from "@/pages/EmployeeChat";
 
@@ -19,8 +21,9 @@ function Protected({ children, role }) {
     </div>
   );
   if (!user) return <Navigate to="/login" replace />;
-  if (role && user.role !== role) {
-    return <Navigate to={user.role === "admin" ? "/admin" : "/chat"} replace />;
+  // /admin is for owner/admin/manager only. Employees get redirected to /chat.
+  if (role === "admin_area" && user.role === "employee") {
+    return <Navigate to="/chat" replace />;
   }
   return children;
 }
@@ -34,8 +37,10 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Landing />} />
               <Route path="/login" element={<Login />} />
-              <Route path="/admin/*" element={<Protected role="admin"><AdminDashboard /></Protected>} />
-              <Route path="/chat" element={<Protected role="employee"><EmployeeChat /></Protected>} />
+              <Route path="/register" element={<Register />} />
+              <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+              <Route path="/admin/*" element={<Protected role="admin_area"><AdminDashboard /></Protected>} />
+              <Route path="/chat" element={<Protected>{<EmployeeChat />}</Protected>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
             <Toaster position="top-right" richColors />

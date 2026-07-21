@@ -63,13 +63,15 @@ export function AuthProvider({ children }) {
     return res.data.user;
   };
 
+  const setUserAfterAuth = (u) => setUser(u);
+
   const logout = () => {
     localStorage.removeItem("wm_token");
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, loading, setUserAfterAuth }}>
       {children}
     </AuthContext.Provider>
   );

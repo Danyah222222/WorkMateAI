@@ -1,0 +1,85 @@
+{
+  "summary": "Verified WorkMate AI multi-tenant SaaS conversion end-to-end. Added /app/backend/tests/test_workspace.py (22 tests, all pass) covering: register-creates-workspace-and-owner (+409 on duplicate email), role migration (admin@technova->owner, sarah/khalid->manager, ahmed/nora->employee), TWO independent workspaces isolation (each owner sees only own /tasks + /team, cross-workspace DELETE task -> 404), invitations create/list/duplicate-conflict/existing-member-conflict/lookup/accept/2nd-use-400, resend bumps expires_at + cancel + resend-on-cancelled 400, RBAC (employee 403 on invite/team-delete/role-change, manager 403 on invite + role-change per spec, owner CAN change role), team stats shape (int fields), team cross-workspace delete -> 404, regression on auth/me carrying workspace_name, tasks CRUD, /tasks/analytics, /memory, /me/stats, /stats, /settings, /employees, /documents, /feedback. Full backend suite: 88 passed / 5 pre-existing legacy failures in test_auth_session.py + test_webhooks_prod.py caused by role migration (they hard-assert role=='admin'/'employee' but admin@technova is now 'owner' and sarah/khalid are 'manager'). These legacy tests should be updated by the main agent; the behavior itself is CORRECT per spec. Frontend: login /login shows create-workspace-link that navigates to /register; register form creates workspace + lands on /admin with sidebar-workspace-name showing the new name; admin@technova login lands on /admin with sidebar workspace 'TechNova'; nav-team opens team-tab with 9 members incl Owner badge (admin), Manager badges (sarah + khalid), Employee badges (others), workload bars + tasks counts; invite-form + send-invite creates invitation, shows last-invite-banner with accept-invite URL + copy-invite-link-btn, pending row has copy/resend/cancel buttons all working (resend fires 'Invitation refreshed' toast); /accept-invite/{token} renders accept-invite-card with 'You've been invited to TechNova', role 'Employee', 'invited by Admin', prefilled email; submitting invite-name-input + invite-password-input successfully creates the user, shows 'Welcome to TechNova' toast, and lands on /chat with employee-chat rendered. All 8 admin sidebar tabs present.",
+  "tested_scope": [
+    "backend-multitenant-register",
+    "backend-role-migration",
+    "backend-workspace-isolation",
+    "backend-invitations-crud",
+    "backend-invitations-lookup-accept",
+    "backend-rbac",
+    "backend-team-stats",
+    "backend-regression",
+    "frontend-register-flow",
+    "frontend-team-tab",
+    "frontend-invite-flow",
+    "frontend-accept-invite",
+    "frontend-role-badges",
+    "frontend-sidebar-workspace-name"
+  ],
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "backend/tests/test_auth_session.py + test_webhooks_prod.py", "issue": "5 pre-existing tests assert user.role in ('admin','employee') but after role migration admin@technova.com is 'owner' and sarah/khalid are 'manager'. Only the tests are stale — the behavior is correct per spec. Update the assertions to use the new role enum."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "passed": [
+    "POST /api/auth/register -> 200, user.role='owner', user.workspace_name matches; duplicate email -> 409",
+    "Role migration: admin@technova.com=owner, sarah=manager, khalid=manager, ahmed=employee, nora=employee; workspace_name='TechNova' in /auth/me for all",
+    "Two independent workspaces: each owner's GET /tasks and GET /team contain only their own rows; cross-workspace DELETE /tasks/{other_id} -> 404",
+    "POST /api/invitations: 200 with status=pending, token set, workspace_id==company_id; duplicate pending -> 409; existing member email -> 409",
+    "GET /api/invitations returns only this workspace's invites",
+    "GET /api/invitations/lookup/{token} (no auth) returns email/role/workspace_name/invited_by_name; expired/cancelled -> 400; unknown -> 404",
+    "POST /api/auth/accept-invite creates user with role from invitation in same workspace_id, returns TokenResponse; 2nd use of token -> 400",
+    "POST /api/invitations/{id}/resend bumps expires_at (verified strictly greater); cancel -> status=cancelled; resend on cancelled -> 400",
+    "RBAC: employee -> 403 on POST /invitations, DELETE /team/{id}, PATCH /team/{id}/role; manager -> 403 on POST /invitations and PATCH /team/{id}/role (per require_admin/require_owner semantics as documented); owner -> 200 on PATCH /team/{id}/role",
+    "GET /api/team stats = {total_tasks, pending, completed, overdue} all int; cross-workspace DELETE /team/{id} -> 404",
+    "Regression: /auth/me, /tasks CRUD, /tasks/analytics shape, /memory, /me/stats, /stats, /settings, /employees, /documents, /feedback all 200",
+    "UI: /login has create-workspace-link that navigates to /register",
+    "UI: /register form (register-form) creates workspace + owner + lands on /admin",
+    "UI: sidebar-workspace-name = 'TechNova' after admin@technova login; = <new workspace> after register",
+    "UI: nav-team opens team-tab with invite-form (invite-email-input, invite-role-select, send-invite-btn) and 9 members table with role badges (Owner/Manager/Employee)",
+    "UI: send-invite creates invitation, shows last-invite-banner with /accept-invite/<token> URL and copy-invite-link-btn",
+    "UI: pending invitations table lists new invite with copy-invite-<id>/resend-invite-<id>/cancel-invite-<id> buttons — all functional (resend fires 'Invitation refreshed' toast)",
+    "UI: /accept-invite/<token> shows accept-invite-card with 'You've been invited to TechNova' + role 'Employee' + 'invited by Admin' + prefilled email; submitting invite-name-input + invite-password-input + invite-submit-btn accepts, shows 'Welcome to TechNova' toast, and lands on /chat (employee-chat rendered)",
+    "UI: all 8 admin sidebar tabs present (dashboard/tasks/team/knowledge/employees/settings/automations/feedback)"
+  ],
+  "failed": [
+    "Pre-existing test_auth_session.py::TestLogin::test_admin_login_returns_jwt_and_user (asserts role=='admin' — now 'owner')",
+    "Pre-existing test_auth_session.py::TestLogin::test_employee_login_returns_jwt_and_user (asserts sarah role=='employee' — now 'manager')",
+    "Pre-existing test_auth_session.py::TestAuthMe::test_me_with_admin_token (asserts role=='admin')",
+    "Pre-existing test_webhooks_prod.py::TestAuthRegression::test_admin_login (asserts role=='admin')",
+    "Pre-existing test_webhooks_prod.py::TestAuthRegression::test_employee_login (asserts role=='employee' but sarah is now 'manager')"
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_workspace.py",
+    "/app/test_reports/pytest/workspace.xml",
+    "/app/test_reports/pytest/full.xml"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_workspace.py (new)"
+  ],
+  "success_rate": {"backend": "100% (22/22 new workspace tests) + 88/93 total legacy suites (5 role-migration-stale assertions)", "frontend": "100% (all specified flows verified)"},
+  "test_credentials": "Owner: admin@technova.com / admin123 ; Manager: sarah@technova.com / employee123 ; Manager: khalid@technova.com / employee123 ; Employee: ahmed@technova.com / employee123 ; Employee: nora@technova.com / employee123",
+  "seed_data_creation": "test_workspace.py creates ephemeral TEST_ prefixed workspaces via /api/auth/register (Acme/Globex/Iso). It leaves 3-4 residual workspaces + a handful of TEST_ pending/accepted TechNova invitations in Mongo — safe to leave for future regressions. UI test also created ~5 TechNova invitations and 3 accepted 'New Hire' TechNova users (visible in the Members table screenshot). Consider a periodic TEST_ cleanup task.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "critical_code_review_comments": [
+    "server.py is now 1396 lines — exceeds the 700-line threshold significantly. Recommend splitting into routers: auth.py (login/register/accept-invite/me), invitations.py, team.py, tasks.py, chat.py, admin.py, webhooks.py. This will become critical for maintainability as more SaaS features are added.",
+    "AdminDashboard.jsx is 1346 lines and now contains TeamTab in addition to Dashboard/Tasks/Knowledge/Employees/Settings/Automations/Feedback. Split into /pages/admin/*.jsx modules (Team.jsx, Tasks.jsx, etc.) with a shared layout wrapper.",
+    "The 5 stale legacy tests (test_auth_session.py / test_webhooks_prod.py) hardcode the pre-migration roles and MUST be updated by main agent — they will keep failing until aligned with the new role enum. Suggested fix: change 'admin' -> 'owner' for admin@technova and 'employee' -> 'manager' for sarah@technova across those files.",
+    "PATCH /api/team/{id}/role currently only owner may change roles (require_owner). This matches spec but note that admins CANNOT promote/demote members — if that changes later, migrate to require_admin with an extra 'target != owner' guard.",
+    "invite acceptance path uses inv['email'] verbatim (case already lowered at creation), and creates a new user; if a user with that email exists in ANOTHER workspace, /auth/accept-invite returns 409 (unique-email semantics across the entire platform). This may be intentional but is worth documenting as a global uniqueness constraint.",
+    "GET /api/team iterates a per-user db.tasks.find inside a Python loop (N+1). Fine for <200 members; consider $group aggregation for scale.",
+    "N8N webhook endpoints hardcode 'Ahmed Ali' as employee — legacy placeholder that should probably use the caller's user.name when time permits.",
+    "invite tokens are two concatenated uuid4.hex (64 chars) — enough entropy but not cryptographically signed. Consider secrets.token_urlsafe(48) for the future.",
+    "server.py hardcodes N8N_LEAVE_WEBHOOK + N8N_IT_SUPPORT_WEBHOOK URLs. Move to env vars.",
+    "extract_memory_background is a fire-and-forget asyncio.create_task inside a StreamingResponse generator — as noted in iteration_4, task may be cancelled if client disconnects mid-stream. Working today but fragile. FastAPI BackgroundTasks or an outbound queue would be more durable."
+  ],
+  "context_for_next_testing_agent": "Backend test files: test_auth_session.py, test_personalization.py, test_tasks.py, test_webhooks_prod.py, test_workspace.py. Run all with `pytest /app/backend/tests/ -v` (~110s). 5 known-failing legacy tests are due to role-migration and need the main agent to update assertions ('admin'->'owner' for admin@technova, 'employee'->'manager' for sarah@technova). Frontend testids added in this iteration: create-workspace-link, register-form/register-workspace-input/register-name-input/register-email-input/register-password-input/register-submit-btn, sidebar-workspace-name, nav-team, team-tab, invite-form/invite-email-input/invite-role-select/send-invite-btn, last-invite-banner/copy-invite-link-btn, member-<id>, remove-member-<id>, invite-<id>, copy-invite-<id>/resend-invite-<id>/cancel-invite-<id>, no-invites, accept-invite-card/invite-email-input/invite-name-input/invite-password-input/invite-submit-btn/invite-error. Admin sidebar order is Dashboard/Tasks/Team/Knowledge/Employees/AI Settings/Automations/Feedback (8 items). Owner role uses Crown icon amber badge, Manager blue, Employee neutral.",
+  "rca of the issue": "N/A — no bugs found. The 5 pre-existing test failures in test_auth_session.py and test_webhooks_prod.py are stale assertions that hardcode pre-migration role names. RCA: the intentional role-migration on startup (sync_roles_migration) promotes admin@technova->owner and sarah/khalid->manager, but two older test files never got their assertions updated. Fix: change the hardcoded 'admin'/'employee' literals to the new expected roles in those two files. No production code change required."
+}

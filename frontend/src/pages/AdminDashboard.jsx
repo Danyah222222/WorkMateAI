@@ -15,14 +15,16 @@ import {
   Sparkles, Upload, Trash2, Calendar, LifeBuoy, FileSpreadsheet, FileType2, Plus,
   ThumbsUp, ThumbsDown, MessageSquare, AlertTriangle, RefreshCw,
   CheckCircle2, Circle, ListTodo, TrendingUp, TrendingDown, Zap, Clock, Flag, ChevronRight, MoreHorizontal,
+  UserPlus, Mail, Send, Shield, Crown, Briefcase, UserCircle2, Copy, X,
 } from "lucide-react";
 import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 const NAV = [
   { key: "dashboard", icon: LayoutDashboard, i18n: "admin_dashboard" },
   { key: "tasks", icon: ListTodo, i18n: "tasks" },
+  { key: "team", icon: Users, i18n: "team" },
   { key: "knowledge", icon: FileText, i18n: "knowledge" },
-  { key: "employees", icon: Users, i18n: "employees" },
+  { key: "employees", icon: Briefcase, i18n: "employees" },
   { key: "settings", icon: Settings2, i18n: "ai_settings" },
   { key: "automations", icon: Workflow, i18n: "automations" },
   { key: "feedback", icon: ThumbsUp, i18n: "feedback" },
@@ -44,7 +46,9 @@ export default function AdminDashboard() {
             </div>
             <div>
               <div className="display font-bold tracking-tight leading-none">WorkMate<span className="text-primary">.</span>AI</div>
-              <div className="text-[11px] text-muted-foreground mt-0.5">Admin workspace</div>
+              <div className="text-[11px] text-muted-foreground mt-0.5 truncate max-w-[160px]" data-testid="sidebar-workspace-name">
+                {user?.workspace_name || "Workspace"}
+              </div>
             </div>
           </div>
         </div>
@@ -97,6 +101,7 @@ export default function AdminDashboard() {
         <div className="p-6 flex-1 overflow-auto">
           {tab === "dashboard" && <DashboardHome setTab={setTab} />}
           {tab === "tasks" && <TasksTab />}
+          {tab === "team" && <TeamTab currentUser={user} />}
           {tab === "knowledge" && <KnowledgeTab />}
           {tab === "employees" && <EmployeesTab />}
           {tab === "settings" && <SettingsTab />}
@@ -1077,6 +1082,263 @@ function TasksTab() {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+
+const ROLE_META = {
+  owner:    { label: "Owner",    icon: Crown,       cls: "text-amber-600 bg-amber-500/10" },
+  admin:    { label: "Admin",    icon: Shield,      cls: "text-primary bg-primary/10" },
+  manager:  { label: "Manager",  icon: Briefcase,   cls: "text-blue-600 bg-blue-500/10" },
+  employee: { label: "Employee", icon: UserCircle2, cls: "text-muted-foreground bg-secondary" },
+};
+
+function TeamTab({ currentUser }) {
+  const [members, setMembers] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [inviteForm, setInviteForm] = useState({ email: "", role: "employee" });
+  const [inviting, setInviting] = useState(false);
+  const [lastInvite, setLastInvite] = useState(null);
+
+  const load = () => {
+    setLoadError(null);
+    setLoading(true);
+    return Promise.all([
+      api.get("/team").then(r => setMembers(r.data)),
+      api.get("/invitations").then(r => setInvites(r.data)),
+    ]).catch(() => setLoadError("Failed to load team.")).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const sendInvite = async (e) => {
+    e.preventDefault();
+    if (!inviteForm.email.trim()) return;
+    setInviting(true);
+    try {
+      const res = await api.post("/invitations", {
+        email: inviteForm.email.trim().toLowerCase(),
+        role: inviteForm.role,
+      });
+      const inviteLink = `${window.location.origin}/accept-invite/${res.data.token}`;
+      setLastInvite({ email: res.data.email, link: inviteLink });
+      setInviteForm({ email: "", role: "employee" });
+      toast.success("Invitation created");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not send invitation");
+    } finally { setInviting(false); }
+  };
+
+  const resendInvite = async (id) => {
+    try {
+      await api.post(`/invitations/${id}/resend`);
+      toast.success("Invitation refreshed");
+      load();
+    } catch { toast.error("Could not resend"); }
+  };
+
+  const cancelInvite = async (id) => {
+    try {
+      await api.delete(`/invitations/${id}`);
+      toast.success("Invitation cancelled");
+      load();
+    } catch { toast.error("Could not cancel"); }
+  };
+
+  const removeMember = async (id) => {
+    if (!window.confirm("Remove this member from your workspace?")) return;
+    try {
+      await api.delete(`/team/${id}`);
+      toast.success("Member removed");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Could not remove");
+    }
+  };
+
+  const copyLink = (link) => {
+    navigator.clipboard?.writeText(link);
+    toast.success("Invite link copied");
+  };
+
+  const pending = invites.filter(i => i.status === "pending");
+
+  return (
+    <div className="space-y-6" data-testid="team-tab">
+      <form onSubmit={sendInvite} className="rounded-2xl border border-border bg-card p-5 flex flex-wrap items-end gap-3" data-testid="invite-form">
+        <div className="flex-1 min-w-[200px] space-y-1.5">
+          <Label>Invite by email</Label>
+          <Input
+            data-testid="invite-email-input"
+            type="email"
+            placeholder="teammate@company.com"
+            value={inviteForm.email}
+            onChange={(e) => setInviteForm({...inviteForm, email: e.target.value})}
+            required
+          />
+        </div>
+        <div className="w-40 space-y-1.5">
+          <Label>Role</Label>
+          <Select value={inviteForm.role} onValueChange={(v) => setInviteForm({...inviteForm, role: v})}>
+            <SelectTrigger data-testid="invite-role-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="employee">Employee</SelectItem>
+              <SelectItem value="manager">Manager</SelectItem>
+              <SelectItem value="admin">Admin</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button type="submit" disabled={inviting} className="rounded-full gap-2" data-testid="send-invite-btn">
+          <UserPlus className="h-4 w-4" strokeWidth={2} /> {inviting ? "Sending…" : "Send invitation"}
+        </Button>
+      </form>
+
+      {lastInvite && (
+        <div className="rounded-2xl border border-primary/40 bg-primary/5 p-4 flex items-center gap-3" data-testid="last-invite-banner">
+          <Mail className="h-4 w-4 text-primary" strokeWidth={1.5} />
+          <div className="text-sm flex-1 min-w-0">
+            <div className="font-medium">Invitation ready for {lastInvite.email}</div>
+            <div className="font-mono text-xs text-muted-foreground truncate">{lastInvite.link}</div>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => copyLink(lastInvite.link)} data-testid="copy-invite-link-btn" className="gap-1.5">
+            <Copy className="h-3 w-3" strokeWidth={1.5} /> Copy link
+          </Button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="space-y-2">
+          {[0,1,2].map(i => <div key={i} className="h-14 rounded-lg bg-secondary/60 animate-pulse" />)}
+        </div>
+      ) : loadError ? (
+        <ErrorState message={loadError} onRetry={load} />
+      ) : (
+        <>
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold">Members</h3>
+              <span className="text-xs text-muted-foreground">{members.length} total</span>
+            </div>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Role</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Tasks</TableHead>
+                    <TableHead>Workload</TableHead>
+                    <TableHead className="text-end">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {members.map((m) => {
+                    const meta = ROLE_META[m.role] || ROLE_META.employee;
+                    const Icon = meta.icon;
+                    const workload = m.stats.pending + m.stats.overdue;
+                    return (
+                      <TableRow key={m.id} data-testid={`member-${m.id}`}>
+                        <TableCell>
+                          <div className="font-medium">{m.name}</div>
+                          <div className="text-xs text-muted-foreground">{m.email}</div>
+                        </TableCell>
+                        <TableCell>
+                          <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-medium ${meta.cls}`}>
+                            <Icon className="h-3 w-3" strokeWidth={1.5} /> {meta.label}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <span className="inline-flex items-center gap-1.5 text-xs">
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Active
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          <span className="text-muted-foreground">{m.stats.total_tasks}</span>
+                          {m.stats.overdue > 0 && <span className="ms-2 text-destructive text-xs">{m.stats.overdue} overdue</span>}
+                        </TableCell>
+                        <TableCell>
+                          <WorkloadBar level={workload} />
+                        </TableCell>
+                        <TableCell className="text-end">
+                          {m.id !== currentUser?.id && m.role !== "owner" && (
+                            <Button variant="ghost" size="icon" onClick={() => removeMember(m.id)} data-testid={`remove-member-${m.id}`}>
+                              <Trash2 className="h-4 w-4 text-destructive" strokeWidth={1.5} />
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-semibold">Pending invitations</h3>
+              <span className="text-xs text-muted-foreground">{pending.length}</span>
+            </div>
+            {pending.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border p-8 text-center text-muted-foreground text-sm" data-testid="no-invites">
+                No pending invitations. Invite teammates using the form above.
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Role</TableHead>
+                      <TableHead>Invited by</TableHead>
+                      <TableHead>Sent</TableHead>
+                      <TableHead className="text-end">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pending.map((inv) => {
+                      const inviteLink = `${window.location.origin}/accept-invite/${inv.token}`;
+                      return (
+                        <TableRow key={inv.id} data-testid={`invite-${inv.id}`}>
+                          <TableCell className="font-medium">{inv.email}</TableCell>
+                          <TableCell><span className="text-xs capitalize">{inv.role}</span></TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{inv.invited_by_name || "—"}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{new Date(inv.created_at).toLocaleDateString()}</TableCell>
+                          <TableCell className="text-end space-x-1">
+                            <Button variant="ghost" size="icon" onClick={() => copyLink(inviteLink)} title="Copy link" data-testid={`copy-invite-${inv.id}`}>
+                              <Copy className="h-4 w-4" strokeWidth={1.5} />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => resendInvite(inv.id)} title="Resend" data-testid={`resend-invite-${inv.id}`}>
+                              <Send className="h-4 w-4" strokeWidth={1.5} />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => cancelInvite(inv.id)} title="Cancel" data-testid={`cancel-invite-${inv.id}`}>
+                              <X className="h-4 w-4 text-destructive" strokeWidth={1.5} />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WorkloadBar({ level }) {
+  const pct = Math.min(100, level * 20); // 5 tasks = 100%
+  const color = level >= 5 ? "bg-destructive" : level >= 3 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div className="w-24 h-1.5 rounded-full bg-secondary overflow-hidden">
+      <div className={`h-full ${color} transition-all`} style={{ width: `${pct}%` }} />
     </div>
   );
 }

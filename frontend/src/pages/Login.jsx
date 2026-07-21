@@ -23,7 +23,7 @@ export default function Login() {
     try {
       const user = await login(email.trim().toLowerCase(), password);
       toast.success(`Welcome, ${user.name}`);
-      navigate(user.role === "admin" ? "/admin" : "/chat", { replace: true });
+      navigate(user.role === "employee" ? "/chat" : "/admin", { replace: true });
     } catch (err) {
       toast.error(err.response?.data?.detail || "Login failed");
     } finally {
@@ -108,6 +108,10 @@ export default function Login() {
             <Button data-testid="login-submit-btn" type="submit" disabled={loading} className="w-full h-11 rounded-md">
               {loading ? "Signing in…" : t("login_btn")}
             </Button>
+            <div className="text-sm text-center text-muted-foreground">
+              Don&apos;t have a workspace?{" "}
+              <Link to="/register" className="text-primary font-medium" data-testid="create-workspace-link">Create one</Link>
+            </div>
           </form>
         </div>
       </div>

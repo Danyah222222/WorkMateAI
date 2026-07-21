@@ -38,12 +38,31 @@ class UserOut(BaseModel):
     id: str
     email: str
     name: str
-    role: Literal["admin", "employee"]
+    role: Literal["owner", "admin", "manager", "employee"]
     company_id: str
+    workspace_name: Optional[str] = None
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    workspace_name: str
+    name: str
+    email: EmailStr
+    password: str
+
+
+class InviteRequest(BaseModel):
+    email: EmailStr
+    role: Literal["admin", "manager", "employee"] = "employee"
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+    name: str
     password: str
 
 
@@ -127,13 +146,32 @@ async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(securit
 
 
 async def require_admin(user=Depends(get_current_user)):
-    if user["role"] != "admin":
+    if user["role"] not in ("owner", "admin"):
         raise HTTPException(403, "Admin only")
     return user
 
 
-def user_to_out(u: dict) -> UserOut:
-    return UserOut(id=u["id"], email=u["email"], name=u["name"], role=u["role"], company_id=u["company_id"])
+async def require_owner(user=Depends(get_current_user)):
+    if user["role"] != "owner":
+        raise HTTPException(403, "Owner only")
+    return user
+
+
+async def require_manager_or_above(user=Depends(get_current_user)):
+    if user["role"] not in ("owner", "admin", "manager"):
+        raise HTTPException(403, "Manager or above required")
+    return user
+
+
+async def get_workspace(company_id: str) -> Optional[dict]:
+    return await db.companies.find_one({"id": company_id})
+
+
+def user_to_out(u: dict, workspace_name: Optional[str] = None) -> UserOut:
+    return UserOut(
+        id=u["id"], email=u["email"], name=u["name"], role=u["role"],
+        company_id=u["company_id"], workspace_name=workspace_name,
+    )
 
 
 # ---------------- Seed ----------------
@@ -223,19 +261,81 @@ async def seed_technova():
     logger.info("Seeded TechNova demo data")
 
 
+async def sync_roles_migration():
+    """Idempotently promote seeded users to the new role model."""
+    role_map = {
+        "admin@technova.com": "owner",
+        "sarah@technova.com": "manager",   # HR manager
+        "khalid@technova.com": "manager",  # Cybersecurity manager
+    }
+    for email, role in role_map.items():
+        await db.users.update_one({"email": email}, {"$set": {"role": role}})
+
+
 # ---------------- Auth Routes ----------------
+@api.post("/auth/register", response_model=TokenResponse)
+async def register(payload: RegisterRequest):
+    email = payload.email.lower().strip()
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(409, "An account with that email already exists")
+    if len(payload.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    if not payload.workspace_name.strip():
+        raise HTTPException(400, "Workspace name is required")
+
+    now = datetime.now(timezone.utc).isoformat()
+    workspace_id = str(uuid.uuid4())
+    slug_base = re.sub(r"[^a-z0-9]+", "-", payload.workspace_name.lower()).strip("-") or "workspace"
+    slug = slug_base
+    n = 1
+    while await db.companies.find_one({"slug": slug}):
+        n += 1
+        slug = f"{slug_base}-{n}"
+
+    await db.companies.insert_one({
+        "id": workspace_id,
+        "slug": slug,
+        "name": payload.workspace_name.strip(),
+        "created_at": now,
+    })
+    await db.settings.insert_one({
+        "id": str(uuid.uuid4()),
+        "company_id": workspace_id,
+        "assistant_name": "WorkMate",
+        "language": "en",
+        "personality": "professional",
+    })
+
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": email,
+        "name": payload.name.strip() or email.split("@")[0],
+        "role": "owner",
+        "company_id": workspace_id,
+        "password_hash": hash_password(payload.password),
+        "created_at": now,
+    }
+    await db.users.insert_one(user_doc)
+    token = create_token(user_id)
+    return TokenResponse(access_token=token, user=user_to_out(user_doc, payload.workspace_name.strip()))
+
+
 @api.post("/auth/login", response_model=TokenResponse)
 async def login(payload: LoginRequest):
     user = await db.users.find_one({"email": payload.email.lower()})
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
+    workspace = await get_workspace(user["company_id"])
     token = create_token(user["id"])
-    return TokenResponse(access_token=token, user=user_to_out(user))
+    return TokenResponse(access_token=token, user=user_to_out(user, (workspace or {}).get("name")))
 
 
 @api.get("/auth/me", response_model=UserOut)
 async def me(user=Depends(get_current_user)):
-    return user_to_out(user)
+    workspace = await get_workspace(user["company_id"])
+    return user_to_out(user, (workspace or {}).get("name"))
 
 
 # ---------------- Company / Settings ----------------
@@ -675,6 +775,185 @@ async def chat_stream(payload: ChatRequest, user=Depends(get_current_user)):
     )
 
 
+# ---------------- Invitations & Team ----------------
+def _new_invite_token() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+@api.post("/invitations")
+async def create_invitation(payload: InviteRequest, user=Depends(require_admin)):
+    email = payload.email.lower().strip()
+    existing_user = await db.users.find_one({"email": email, "company_id": user["company_id"]})
+    if existing_user:
+        raise HTTPException(409, "This user is already in your workspace")
+    active = await db.invitations.find_one({
+        "email": email, "company_id": user["company_id"], "status": "pending",
+    })
+    if active:
+        raise HTTPException(409, "An invitation for this email is already pending")
+
+    now = datetime.now(timezone.utc)
+    token = _new_invite_token()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "workspace_id": user["company_id"],   # semantic alias
+        "company_id": user["company_id"],
+        "email": email,
+        "role": payload.role,
+        "token": token,
+        "status": "pending",
+        "invited_by": user["id"],
+        "invited_by_name": user["name"],
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=14)).isoformat(),
+    }
+    await db.invitations.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/invitations")
+async def list_invitations(user=Depends(require_admin)):
+    rows = await db.invitations.find(
+        {"company_id": user["company_id"]}, {"_id": 0}
+    ).sort("created_at", -1).to_list(200)
+    return rows
+
+
+@api.post("/invitations/{invite_id}/resend")
+async def resend_invitation(invite_id: str, user=Depends(require_admin)):
+    inv = await db.invitations.find_one({"id": invite_id, "company_id": user["company_id"]})
+    if not inv:
+        raise HTTPException(404, "Invitation not found")
+    if inv["status"] != "pending":
+        raise HTTPException(400, "Invitation is not pending")
+    now = datetime.now(timezone.utc)
+    await db.invitations.update_one(
+        {"id": invite_id},
+        {"$set": {
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=14)).isoformat(),
+        }},
+    )
+    return {"ok": True}
+
+
+@api.delete("/invitations/{invite_id}")
+async def cancel_invitation(invite_id: str, user=Depends(require_admin)):
+    inv = await db.invitations.find_one({"id": invite_id, "company_id": user["company_id"]})
+    if not inv:
+        raise HTTPException(404, "Invitation not found")
+    await db.invitations.update_one(
+        {"id": invite_id},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.get("/invitations/lookup/{token}")
+async def lookup_invitation(token: str):
+    inv = await db.invitations.find_one({"token": token}, {"_id": 0})
+    if not inv:
+        raise HTTPException(404, "Invitation not found")
+    if inv["status"] != "pending":
+        raise HTTPException(400, "Invitation is no longer valid")
+    if inv.get("expires_at") and inv["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(400, "Invitation has expired")
+    workspace = await get_workspace(inv["company_id"])
+    return {
+        "email": inv["email"],
+        "role": inv["role"],
+        "workspace_name": (workspace or {}).get("name"),
+        "invited_by_name": inv.get("invited_by_name"),
+    }
+
+
+@api.post("/auth/accept-invite", response_model=TokenResponse)
+async def accept_invite(payload: AcceptInviteRequest):
+    inv = await db.invitations.find_one({"token": payload.token})
+    if not inv:
+        raise HTTPException(404, "Invitation not found")
+    if inv["status"] != "pending":
+        raise HTTPException(400, "Invitation is no longer valid")
+    if inv.get("expires_at") and inv["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(400, "Invitation has expired")
+    if len(payload.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    existing = await db.users.find_one({"email": inv["email"]})
+    if existing:
+        raise HTTPException(409, "An account with that email already exists")
+
+    now = datetime.now(timezone.utc).isoformat()
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": inv["email"],
+        "name": payload.name.strip() or inv["email"].split("@")[0],
+        "role": inv["role"],
+        "company_id": inv["company_id"],
+        "password_hash": hash_password(payload.password),
+        "created_at": now,
+    }
+    await db.users.insert_one(user_doc)
+    await db.invitations.update_one(
+        {"id": inv["id"]},
+        {"$set": {"status": "accepted", "accepted_at": now}},
+    )
+    workspace = await get_workspace(inv["company_id"])
+    token = create_token(user_id)
+    return TokenResponse(access_token=token, user=user_to_out(user_doc, (workspace or {}).get("name")))
+
+
+@api.get("/team")
+async def list_team(user=Depends(get_current_user)):
+    members = await db.users.find(
+        {"company_id": user["company_id"]},
+        {"_id": 0, "password_hash": 0},
+    ).to_list(500)
+    for m in members:
+        # workload: pending + overdue tasks assigned to (or created by) this user
+        tasks = await db.tasks.find({"user_id": m["id"]}, {"_id": 0}).to_list(500)
+        pending = [t for t in tasks if t["status"] == "pending"]
+        completed = [t for t in tasks if t["status"] == "completed"]
+        overdue = [t for t in pending if _is_overdue(t)]
+        m["stats"] = {
+            "total_tasks": len(tasks),
+            "pending": len(pending),
+            "completed": len(completed),
+            "overdue": len(overdue),
+        }
+        m["status"] = "active"  # placeholder — could hook into last_login
+    return members
+
+
+@api.delete("/team/{member_id}")
+async def remove_member(member_id: str, user=Depends(require_admin)):
+    target = await db.users.find_one({"id": member_id, "company_id": user["company_id"]})
+    if not target:
+        raise HTTPException(404, "Member not found")
+    if target["id"] == user["id"]:
+        raise HTTPException(400, "You cannot remove yourself")
+    if target["role"] == "owner":
+        raise HTTPException(400, "The owner cannot be removed")
+    await db.users.delete_one({"id": member_id, "company_id": user["company_id"]})
+    return {"ok": True}
+
+
+@api.patch("/team/{member_id}/role")
+async def change_member_role(member_id: str, payload: dict, user=Depends(require_owner)):
+    new_role = payload.get("role")
+    if new_role not in ("admin", "manager", "employee"):
+        raise HTTPException(400, "Invalid role")
+    target = await db.users.find_one({"id": member_id, "company_id": user["company_id"]})
+    if not target:
+        raise HTTPException(404, "Member not found")
+    if target["role"] == "owner":
+        raise HTTPException(400, "Owner role cannot be changed here")
+    await db.users.update_one({"id": member_id}, {"$set": {"role": new_role}})
+    return {"ok": True, "role": new_role}
+
+
 # ---------------- Feedback ----------------
 @api.post("/messages/{message_id}/feedback")
 async def submit_feedback(message_id: str, payload: FeedbackIn, user=Depends(get_current_user)):
@@ -1108,6 +1387,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await seed_technova()
+    await sync_roles_migration()
 
 
 @app.on_event("shutdown")
