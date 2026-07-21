@@ -24,6 +24,7 @@ export const translations = {
     login_btn: "Sign in",
     // Admin
     admin_dashboard: "Dashboard",
+    tasks: "Tasks",
     knowledge: "Knowledge",
     employees: "Employees",
     ai_settings: "AI Settings",
@@ -102,6 +103,7 @@ export const translations = {
     password: "كلمة المرور",
     login_btn: "تسجيل الدخول",
     admin_dashboard: "لوحة التحكم",
+    tasks: "المهام",
     knowledge: "المعرفة",
     employees: "الموظفون",
     ai_settings: "إعدادات الذكاء",

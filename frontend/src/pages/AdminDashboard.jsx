@@ -14,10 +14,13 @@ import {
   LayoutDashboard, FileText, Users, Settings2, Workflow, LogOut,
   Sparkles, Upload, Trash2, Calendar, LifeBuoy, FileSpreadsheet, FileType2, Plus,
   ThumbsUp, ThumbsDown, MessageSquare, AlertTriangle, RefreshCw,
+  CheckCircle2, Circle, ListTodo, TrendingUp, TrendingDown, Zap, Clock, Flag, ChevronRight, MoreHorizontal,
 } from "lucide-react";
+import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 const NAV = [
   { key: "dashboard", icon: LayoutDashboard, i18n: "admin_dashboard" },
+  { key: "tasks", icon: ListTodo, i18n: "tasks" },
   { key: "knowledge", icon: FileText, i18n: "knowledge" },
   { key: "employees", icon: Users, i18n: "employees" },
   { key: "settings", icon: Settings2, i18n: "ai_settings" },
@@ -29,20 +32,6 @@ export default function AdminDashboard() {
   const { user, logout } = useAuth();
   const { t } = useLang();
   const [tab, setTab] = useState("dashboard");
-  const [stats, setStats] = useState({ employees: 0, documents: 0, conversations: 0 });
-  const [statsLoading, setStatsLoading] = useState(true);
-  const [statsError, setStatsError] = useState(null);
-
-  const loadStats = () => {
-    setStatsError(null);
-    setStatsLoading(true);
-    return api.get("/stats")
-      .then(r => setStats(r.data))
-      .catch(() => setStatsError("Failed to load dashboard stats."))
-      .finally(() => setStatsLoading(false));
-  };
-
-  useEffect(() => { loadStats(); }, [tab]);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground" data-testid="admin-dashboard">
@@ -106,7 +95,8 @@ export default function AdminDashboard() {
         </header>
 
         <div className="p-6 flex-1 overflow-auto">
-          {tab === "dashboard" && <DashboardHome stats={stats} setTab={setTab} loading={statsLoading} loadError={statsError} onRetry={loadStats} />}
+          {tab === "dashboard" && <DashboardHome setTab={setTab} />}
+          {tab === "tasks" && <TasksTab />}
           {tab === "knowledge" && <KnowledgeTab />}
           {tab === "employees" && <EmployeesTab />}
           {tab === "settings" && <SettingsTab />}
@@ -118,44 +108,292 @@ export default function AdminDashboard() {
   );
 }
 
-function DashboardHome({ stats, setTab, loading, loadError, onRetry }) {
-  const { t } = useLang();
-  const cards = [
-    { label: t("stat_employees"), val: stats.employees, icon: Users, to: "employees" },
-    { label: t("stat_documents"), val: stats.documents, icon: FileText, to: "knowledge" },
-    { label: t("stat_conversations"), val: stats.conversations, icon: Sparkles, to: "dashboard" },
-  ];
+function DashboardHome({ setTab }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+
+  const load = () => {
+    setLoadError(null);
+    setLoading(true);
+    return api.get("/tasks/analytics")
+      .then(r => setData(r.data))
+      .catch(() => setLoadError("Failed to load productivity analytics."))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  if (loading) return <DashboardSkeleton />;
+  if (loadError) return <ErrorState message={loadError} onRetry={load} />;
+
+  const t_ = data.totals;
+  const isEmpty = t_.total === 0;
+
+  return (
+    <div className="space-y-6" data-testid="productivity-dashboard">
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <StatCard label="Total tasks" value={t_.total} icon={ListTodo} testId="stat-total" />
+        <StatCard label="Completed" value={t_.completed} icon={CheckCircle2} tone="up" testId="stat-completed" />
+        <StatCard label="Pending" value={t_.pending} icon={Circle} testId="stat-pending" />
+        <StatCard label="Overdue" value={t_.overdue} icon={AlertTriangle} tone={t_.overdue > 0 ? "down" : "muted"} testId="stat-overdue" />
+        <StatCard label="Completion rate" value={`${t_.completion_rate}%`} icon={TrendingUp} testId="stat-rate" />
+        <StatCard label="AI sessions" value={t_.ai_sessions} icon={Sparkles} testId="stat-ai" />
+      </div>
+
+      {isEmpty ? (
+        <EmptyState
+          icon={ListTodo}
+          title="Your dashboard starts here"
+          description="Create your first task to unlock real-time analytics, completion trends, and productivity insights."
+          ctaLabel="Create your first task"
+          onCta={() => setTab("tasks")}
+          testId="dashboard-empty"
+        />
+      ) : (
+        <>
+          {/* Quick actions + insights */}
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6" data-testid="smart-insights">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold">Smart insights</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">Auto-generated from your productivity data.</p>
+                </div>
+                <Zap className="h-5 w-5 text-primary" strokeWidth={1.5} />
+              </div>
+              <ul className="space-y-2">
+                {data.insights.length === 0 && (
+                  <li className="text-sm text-muted-foreground">Keep going — insights appear once you have more activity.</li>
+                )}
+                {data.insights.map((ins, i) => (
+                  <li key={i} data-testid={`insight-${i}`} className="flex items-start gap-2 text-sm">
+                    <ChevronRight className="h-4 w-4 mt-0.5 text-primary flex-shrink-0 rtl-flip" strokeWidth={2} />
+                    <span>{ins}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-6" data-testid="quick-actions">
+              <h3 className="text-lg font-semibold mb-4">Quick actions</h3>
+              <div className="space-y-2">
+                <QuickAction icon={Plus} label="Create task" onClick={() => setTab("tasks")} testId="qa-create-task" />
+                <QuickAction icon={Sparkles} label="Open AI assistant" onClick={() => window.open("/chat", "_self")} testId="qa-open-chat" />
+                <QuickAction icon={FileText} label="Upload knowledge" onClick={() => setTab("knowledge")} testId="qa-upload" />
+                <QuickAction icon={Workflow} label="View automations" onClick={() => setTab("automations")} testId="qa-automations" />
+              </div>
+            </div>
+          </div>
+
+          {/* Charts */}
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6" data-testid="chart-weekly">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="text-lg font-semibold">Weekly productivity</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {data.this_week_completed} completed this week ·{" "}
+                    <TrendBadge pct={data.trend_pct} />
+                  </p>
+                </div>
+              </div>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={data.weekly_series} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
+                    <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="completed" name="Completed" fill="hsl(var(--primary))" radius={[6,6,0,0]} />
+                    <Bar dataKey="created" name="Created" fill="hsl(var(--muted-foreground) / 0.35)" radius={[6,6,0,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-6" data-testid="chart-status">
+              <h3 className="text-lg font-semibold mb-4">Status distribution</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={data.status_distribution} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80} paddingAngle={2}>
+                      {data.status_distribution.map((entry, i) => (
+                        <Cell key={i} fill={["hsl(var(--primary))", "hsl(var(--muted-foreground) / 0.35)", "hsl(var(--destructive))"][i]} />
+                      ))}
+                    </Pie>
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6" data-testid="chart-trend">
+              <h3 className="text-lg font-semibold mb-4">Completion trend (30 days)</h3>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={data.trend_series} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
+                    <XAxis dataKey="date" hide />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="cumulative" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-6" data-testid="chart-priority">
+              <h3 className="text-lg font-semibold mb-4">Priority</h3>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={data.priority_distribution} layout="vertical" margin={{ top: 10, right: 8, left: 20, bottom: 0 }}>
+                    <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <YAxis type="category" dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} width={60} />
+                    <Tooltip contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
+                    <Bar dataKey="value" fill="hsl(var(--primary))" radius={[0,6,6,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* Productivity meta + Recent activity */}
+          <div className="grid lg:grid-cols-3 gap-4">
+            <div className="rounded-2xl border border-border bg-card p-6" data-testid="productivity-meta">
+              <h3 className="text-lg font-semibold mb-4">This period</h3>
+              <MetaRow label="Completed this week" value={data.this_week_completed} />
+              <MetaRow label="Completed this month" value={data.this_month_completed} />
+              <MetaRow label="Most productive day" value={data.most_productive_day || "—"} />
+              <MetaRow label="Most productive hour" value={data.most_productive_hour !== null ? `${data.most_productive_hour}:00` : "—"} />
+              <MetaRow label="Avg time to complete" value={data.avg_completion_time_hours !== null ? `${data.avg_completion_time_hours}h` : "—"} />
+              <MetaRow label="Active projects" value={t_.active_projects} />
+            </div>
+
+            <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6" data-testid="recent-activity">
+              <h3 className="text-lg font-semibold mb-4">Recent activity</h3>
+              {data.recent_activity.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No activity yet.</div>
+              ) : (
+                <ul className="space-y-3">
+                  {data.recent_activity.map((a, i) => (
+                    <li key={i} data-testid={`activity-${i}`} className="flex items-center gap-3">
+                      <ActivityIcon type={a.type} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm truncate">{activityLabel(a)}</div>
+                        <div className="text-xs text-muted-foreground">{formatRelative(a.created_at)}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon: Icon, tone, testId }) {
+  const toneCls = tone === "up"
+    ? "text-emerald-600 bg-emerald-500/10"
+    : tone === "down"
+    ? "text-destructive bg-destructive/10"
+    : "text-muted-foreground bg-secondary";
+  return (
+    <div data-testid={testId} className="rounded-2xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">{label}</div>
+        <div className={`h-7 w-7 rounded-lg grid place-items-center ${toneCls}`}>
+          <Icon className="h-3.5 w-3.5" strokeWidth={1.5} />
+        </div>
+      </div>
+      <div className="display text-2xl font-bold mt-3">{value}</div>
+    </div>
+  );
+}
+
+function QuickAction({ icon: Icon, label, onClick, testId }) {
+  return (
+    <button
+      data-testid={testId}
+      onClick={onClick}
+      className="w-full flex items-center gap-3 rounded-md border border-border bg-card px-3 py-2.5 text-sm hover:border-primary hover:-translate-y-0.5 transition-all"
+    >
+      <div className="h-7 w-7 rounded-md bg-primary/10 text-primary grid place-items-center">
+        <Icon className="h-3.5 w-3.5" strokeWidth={1.5} />
+      </div>
+      <span className="flex-1 text-start">{label}</span>
+      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground rtl-flip" strokeWidth={2} />
+    </button>
+  );
+}
+
+function MetaRow({ label, value }) {
+  return (
+    <div className="flex items-center justify-between py-2.5 border-b border-border last:border-0">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="text-sm font-semibold">{value}</span>
+    </div>
+  );
+}
+
+function TrendBadge({ pct }) {
+  if (pct === 0) return <span className="text-muted-foreground">no change</span>;
+  const up = pct > 0;
+  const Icon = up ? TrendingUp : TrendingDown;
+  return (
+    <span className={`inline-flex items-center gap-1 ${up ? "text-emerald-600" : "text-destructive"}`}>
+      <Icon className="h-3 w-3" strokeWidth={2} /> {up ? "+" : ""}{pct}% vs last week
+    </span>
+  );
+}
+
+function ActivityIcon({ type }) {
+  const map = {
+    task_created: { i: Plus, c: "text-primary bg-primary/10" },
+    task_completed: { i: CheckCircle2, c: "text-emerald-600 bg-emerald-500/10" },
+    ai_conversation: { i: Sparkles, c: "text-primary bg-primary/10" },
+  };
+  const { i: Icon, c } = map[type] || { i: MoreHorizontal, c: "text-muted-foreground bg-secondary" };
+  return (
+    <div className={`h-8 w-8 rounded-lg grid place-items-center flex-shrink-0 ${c}`}>
+      <Icon className="h-4 w-4" strokeWidth={1.5} />
+    </div>
+  );
+}
+
+function activityLabel(a) {
+  if (a.type === "task_created") return `Created task · ${a.title}`;
+  if (a.type === "task_completed") return `Completed task · ${a.title}`;
+  if (a.type === "ai_conversation") return `AI conversation · ${a.title}`;
+  return a.title || a.type;
+}
+
+function formatRelative(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  const now = Date.now();
+  const s = Math.floor((now - t) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s/60)} min ago`;
+  if (s < 86400) return `${Math.floor(s/3600)} h ago`;
+  return `${Math.floor(s/86400)} d ago`;
+}
+
+function DashboardSkeleton() {
   return (
     <div className="space-y-6">
-      {loadError && <ErrorState message={loadError} onRetry={onRetry} />}
-      <div className="grid sm:grid-cols-3 gap-4">
-        {cards.map((c, i) => {
-          const Icon = c.icon;
-          return (
-            <button
-              key={i}
-              data-testid={`stat-card-${c.to}`}
-              onClick={() => setTab(c.to)}
-              className="rounded-2xl border border-border bg-card p-6 text-start hover:-translate-y-0.5 hover:shadow-md transition-all"
-            >
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-muted-foreground">{c.label}</div>
-                <Icon className="h-4 w-4 text-muted-foreground" strokeWidth={1.5} />
-              </div>
-              {loading ? (
-                <div className="mt-4 h-10 w-16 rounded bg-secondary animate-pulse" />
-              ) : (
-                <div className="display text-4xl font-bold mt-4">{c.val}</div>
-              )}
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {Array.from({length: 6}).map((_, i) => <div key={i} className="h-24 rounded-2xl bg-secondary/60 animate-pulse" />)}
       </div>
-      <div className="rounded-2xl border border-border bg-card p-8">
-        <h3 className="display text-2xl font-bold tracking-tight">Welcome back</h3>
-        <p className="text-muted-foreground mt-2 max-w-2xl">
-          Upload company files, manage your directory, and configure your AI assistant. Employees can start chatting the moment your knowledge is in place.
-        </p>
+      <div className="grid lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 h-64 rounded-2xl bg-secondary/60 animate-pulse" />
+        <div className="h-64 rounded-2xl bg-secondary/60 animate-pulse" />
       </div>
     </div>
   );
@@ -675,6 +913,169 @@ function ErrorState({ message, onRetry }) {
         <Button variant="outline" size="sm" onClick={onRetry} className="mt-4 rounded-full gap-2" data-testid="error-retry-btn">
           <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} /> Try again
         </Button>
+      )}
+    </div>
+  );
+}
+
+
+function TasksTab() {
+  const [tasks, setTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", priority: "medium", project: "", due_date: "" });
+  const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState("all");
+
+  const load = () => {
+    setLoadError(null);
+    setLoading(true);
+    return api.get("/tasks")
+      .then(r => setTasks(r.data))
+      .catch(() => setLoadError("Failed to load tasks."))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const create = async (e) => {
+    e.preventDefault();
+    if (!form.title.trim()) return;
+    setSaving(true);
+    try {
+      await api.post("/tasks", {
+        title: form.title.trim(),
+        priority: form.priority,
+        project: form.project.trim() || undefined,
+        due_date: form.due_date || undefined,
+      });
+      setForm({ title: "", priority: "medium", project: "", due_date: "" });
+      setShowForm(false);
+      toast.success("Task created");
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to create task");
+    } finally { setSaving(false); }
+  };
+
+  const toggle = async (task) => {
+    const next = task.status === "completed" ? "pending" : "completed";
+    try {
+      await api.patch(`/tasks/${task.id}`, { status: next });
+      load();
+    } catch {
+      toast.error("Failed to update task");
+    }
+  };
+
+  const remove = async (id) => {
+    try {
+      await api.delete(`/tasks/${id}`);
+      toast.success("Task removed");
+      load();
+    } catch { toast.error("Failed to remove"); }
+  };
+
+  const filtered = tasks.filter(t => {
+    if (filter === "all") return true;
+    if (filter === "overdue") return t.overdue;
+    return t.status === filter;
+  });
+
+  const priorityColor = { high: "text-destructive", medium: "text-primary", low: "text-muted-foreground" };
+
+  return (
+    <div className="space-y-4" data-testid="tasks-tab">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2">
+          {[
+            { k: "all", label: "All" },
+            { k: "pending", label: "Pending" },
+            { k: "completed", label: "Completed" },
+            { k: "overdue", label: "Overdue" },
+          ].map(f => (
+            <button
+              key={f.k}
+              data-testid={`task-filter-${f.k}`}
+              onClick={() => setFilter(f.k)}
+              className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                filter === f.k ? "bg-primary text-primary-foreground border-primary" : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+            >{f.label}</button>
+          ))}
+        </div>
+        <Button data-testid="new-task-btn" onClick={() => setShowForm(v => !v)} className="rounded-full gap-2">
+          <Plus className="h-4 w-4" strokeWidth={2} /> New task
+        </Button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={create} className="rounded-2xl border border-border bg-card p-5 grid sm:grid-cols-2 lg:grid-cols-4 gap-3" data-testid="task-form">
+          <Input required placeholder="Task title" value={form.title} onChange={(e) => setForm({...form, title: e.target.value})} data-testid="task-title-input" className="lg:col-span-2" />
+          <Input placeholder="Project (optional)" value={form.project} onChange={(e) => setForm({...form, project: e.target.value})} data-testid="task-project-input" />
+          <Input type="date" value={form.due_date} onChange={(e) => setForm({...form, due_date: e.target.value})} data-testid="task-due-input" />
+          <Select value={form.priority} onValueChange={(v) => setForm({...form, priority: v})}>
+            <SelectTrigger data-testid="task-priority-select"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="high">High priority</SelectItem>
+              <SelectItem value="medium">Medium priority</SelectItem>
+              <SelectItem value="low">Low priority</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="lg:col-span-3 flex justify-end gap-2">
+            <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button type="submit" data-testid="save-task-btn" disabled={saving}>{saving ? "Saving…" : "Save task"}</Button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <div className="space-y-2">
+          {[0,1,2].map(i => <div key={i} className="h-14 rounded-lg bg-secondary/60 animate-pulse" />)}
+        </div>
+      ) : loadError ? (
+        <ErrorState message={loadError} onRetry={load} />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={ListTodo}
+          title={tasks.length === 0 ? "No tasks yet" : "Nothing matches this filter"}
+          description={tasks.length === 0 ? "Create your first task and watch your dashboard come alive." : "Try a different filter to see other tasks."}
+          ctaLabel={tasks.length === 0 ? "Create your first task" : undefined}
+          onCta={tasks.length === 0 ? () => setShowForm(true) : undefined}
+          testId="empty-tasks"
+        />
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((task) => (
+            <div key={task.id} data-testid={`task-${task.id}`} className={`flex items-center gap-3 rounded-lg border border-border bg-card p-3 transition-colors ${task.status === "completed" ? "opacity-60" : ""}`}>
+              <button
+                data-testid={`toggle-${task.id}`}
+                onClick={() => toggle(task)}
+                className="h-6 w-6 rounded-full border-2 border-border grid place-items-center hover:border-primary transition-colors flex-shrink-0"
+                aria-label="Toggle complete"
+              >
+                {task.status === "completed" && <CheckCircle2 className="h-5 w-5 text-emerald-600" strokeWidth={2} />}
+              </button>
+              <div className="flex-1 min-w-0">
+                <div className={`text-sm font-medium truncate ${task.status === "completed" ? "line-through" : ""}`}>{task.title}</div>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
+                  <span className={`inline-flex items-center gap-1 ${priorityColor[task.priority]}`}>
+                    <Flag className="h-3 w-3" strokeWidth={1.5} /> {task.priority}
+                  </span>
+                  {task.project && <span className="inline-flex items-center gap-1"><Workflow className="h-3 w-3" strokeWidth={1.5} /> {task.project}</span>}
+                  {task.due_date && (
+                    <span className={`inline-flex items-center gap-1 ${task.overdue ? "text-destructive" : ""}`}>
+                      <Clock className="h-3 w-3" strokeWidth={1.5} /> {task.due_date}{task.overdue ? " · overdue" : ""}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => remove(task.id)} data-testid={`delete-task-${task.id}`}>
+                <Trash2 className="h-4 w-4 text-destructive" strokeWidth={1.5} />
+              </Button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

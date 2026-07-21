@@ -76,6 +76,24 @@ class FeedbackIn(BaseModel):
     comment: Optional[str] = None
 
 
+class TaskIn(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: Literal["low", "medium", "high"] = "medium"
+    due_date: Optional[str] = None  # ISO date YYYY-MM-DD
+    project: Optional[str] = None
+    status: Literal["pending", "completed"] = "pending"
+
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    priority: Optional[Literal["low", "medium", "high"]] = None
+    due_date: Optional[str] = None
+    project: Optional[str] = None
+    status: Optional[Literal["pending", "completed"]] = None
+
+
 # ---------------- Auth helpers ----------------
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
@@ -718,6 +736,289 @@ async def feedback_stats(user=Depends(require_admin)):
     up = await db.feedback.count_documents({"company_id": user["company_id"], "rating": "up"})
     down = await db.feedback.count_documents({"company_id": user["company_id"], "rating": "down"})
     return {"up": up, "down": down, "total": up + down}
+
+
+# ---------------- Tasks & Productivity ----------------
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_overdue(t: dict) -> bool:
+    if t.get("status") == "completed":
+        return False
+    dd = t.get("due_date")
+    if not dd:
+        return False
+    try:
+        today = datetime.now(timezone.utc).date().isoformat()
+        return dd < today
+    except Exception:
+        return False
+
+
+@api.get("/tasks")
+async def list_tasks(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    project: Optional[str] = None,
+    user=Depends(get_current_user),
+):
+    q = {"user_id": user["id"]}
+    if status: q["status"] = status
+    if priority: q["priority"] = priority
+    if project: q["project"] = project
+    rows = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # decorate with overdue flag (derived)
+    for r in rows:
+        r["overdue"] = _is_overdue(r)
+    return rows
+
+
+@api.post("/tasks")
+async def create_task(payload: TaskIn, user=Depends(get_current_user)):
+    now = _now_iso()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "company_id": user["company_id"],
+        "title": payload.title.strip()[:200],
+        "description": (payload.description or "").strip()[:2000],
+        "priority": payload.priority,
+        "due_date": payload.due_date,
+        "project": (payload.project or "").strip() or None,
+        "status": payload.status,
+        "created_at": now,
+        "updated_at": now,
+        "completed_at": now if payload.status == "completed" else None,
+    }
+    await db.tasks.insert_one(doc)
+    doc.pop("_id", None)
+    doc["overdue"] = _is_overdue(doc)
+    # activity log
+    await db.activity.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "company_id": user["company_id"],
+        "type": "task_created",
+        "task_id": doc["id"],
+        "title": doc["title"],
+        "created_at": now,
+    })
+    return doc
+
+
+@api.patch("/tasks/{task_id}")
+async def update_task(task_id: str, payload: TaskUpdate, user=Depends(get_current_user)):
+    existing = await db.tasks.find_one({"id": task_id, "user_id": user["id"]})
+    if not existing:
+        raise HTTPException(404, "Task not found")
+    updates = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if not updates:
+        existing.pop("_id", None)
+        existing["overdue"] = _is_overdue(existing)
+        return existing
+    now = _now_iso()
+    updates["updated_at"] = now
+    # Track completion transition
+    if "status" in updates:
+        if updates["status"] == "completed" and existing.get("status") != "completed":
+            updates["completed_at"] = now
+        elif updates["status"] == "pending":
+            updates["completed_at"] = None
+    await db.tasks.update_one({"id": task_id, "user_id": user["id"]}, {"$set": updates})
+
+    # Log activity for completion
+    if updates.get("status") == "completed" and existing.get("status") != "completed":
+        await db.activity.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "company_id": user["company_id"],
+            "type": "task_completed",
+            "task_id": task_id,
+            "title": existing.get("title"),
+            "created_at": now,
+        })
+
+    doc = await db.tasks.find_one({"id": task_id, "user_id": user["id"]}, {"_id": 0})
+    doc["overdue"] = _is_overdue(doc)
+    return doc
+
+
+@api.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, user=Depends(get_current_user)):
+    res = await db.tasks.delete_one({"id": task_id, "user_id": user["id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
+@api.get("/tasks/analytics")
+async def tasks_analytics(user=Depends(get_current_user)):
+    from datetime import timedelta as _td
+    now_dt = datetime.now(timezone.utc)
+    today = now_dt.date()
+    week_ago = now_dt - _td(days=7)
+    month_ago = now_dt - _td(days=30)
+    prev_week_start = now_dt - _td(days=14)
+    prev_week_end = now_dt - _td(days=7)
+
+    tasks = await db.tasks.find({"user_id": user["id"]}, {"_id": 0}).to_list(2000)
+    for t in tasks:
+        t["overdue"] = _is_overdue(t)
+
+    total = len(tasks)
+    completed = [t for t in tasks if t["status"] == "completed"]
+    pending = [t for t in tasks if t["status"] == "pending" and not t["overdue"]]
+    overdue = [t for t in tasks if t["overdue"]]
+    completion_rate = round((len(completed) / total * 100), 1) if total else 0.0
+
+    def in_range(iso, start, end=None):
+        if not iso: return False
+        try:
+            dt = datetime.fromisoformat(iso.replace("Z", "+00:00")) if isinstance(iso, str) else iso
+        except Exception:
+            return False
+        if end:
+            return start <= dt < end
+        return dt >= start
+
+    this_week_completed = sum(1 for t in completed if in_range(t.get("completed_at"), week_ago))
+    this_month_completed = sum(1 for t in completed if in_range(t.get("completed_at"), month_ago))
+    last_week_completed = sum(1 for t in completed if in_range(t.get("completed_at"), prev_week_start, prev_week_end))
+
+    if last_week_completed == 0:
+        trend_pct = 100.0 if this_week_completed > 0 else 0.0
+    else:
+        trend_pct = round(((this_week_completed - last_week_completed) / last_week_completed) * 100, 1)
+
+    # Weekly series: 7 buckets [oldest -> today]
+    weekly_series = []
+    for i in range(6, -1, -1):
+        day = today - _td(days=i)
+        day_iso = day.isoformat()
+        completed_that_day = sum(1 for t in completed
+                                 if t.get("completed_at", "")[:10] == day_iso)
+        created_that_day = sum(1 for t in tasks
+                               if t.get("created_at", "")[:10] == day_iso)
+        weekly_series.append({
+            "date": day_iso,
+            "label": day.strftime("%a"),
+            "completed": completed_that_day,
+            "created": created_that_day,
+        })
+
+    # Trend series: last 30 days cumulative completions
+    trend_series = []
+    running = 0
+    for i in range(29, -1, -1):
+        day = today - _td(days=i)
+        day_iso = day.isoformat()
+        running += sum(1 for t in completed if t.get("completed_at", "")[:10] == day_iso)
+        trend_series.append({"date": day_iso, "cumulative": running})
+
+    # Distributions
+    status_distribution = [
+        {"name": "Completed", "value": len(completed)},
+        {"name": "Pending", "value": len(pending)},
+        {"name": "Overdue", "value": len(overdue)},
+    ]
+    priority_distribution = [
+        {"name": "High", "value": sum(1 for t in tasks if t["priority"] == "high")},
+        {"name": "Medium", "value": sum(1 for t in tasks if t["priority"] == "medium")},
+        {"name": "Low", "value": sum(1 for t in tasks if t["priority"] == "low")},
+    ]
+
+    # Most productive day & hour (from completed_at)
+    day_counts = [0]*7  # Mon..Sun
+    hour_counts = [0]*24
+    total_completion_hours = 0.0
+    completion_hours_count = 0
+    for t in completed:
+        ca = t.get("completed_at")
+        if not ca: continue
+        try:
+            dt = datetime.fromisoformat(ca.replace("Z", "+00:00"))
+            day_counts[dt.weekday()] += 1
+            hour_counts[dt.hour] += 1
+        except Exception:
+            continue
+        cr = t.get("created_at")
+        try:
+            cr_dt = datetime.fromisoformat(cr.replace("Z", "+00:00")) if cr else None
+            if cr_dt:
+                total_completion_hours += (dt - cr_dt).total_seconds() / 3600.0
+                completion_hours_count += 1
+        except Exception:
+            pass
+
+    days_of_week = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+    most_productive_day = days_of_week[day_counts.index(max(day_counts))] if any(day_counts) else None
+    most_productive_hour = hour_counts.index(max(hour_counts)) if any(hour_counts) else None
+    avg_completion_time_hours = round(total_completion_hours / completion_hours_count, 1) if completion_hours_count else None
+
+    active_projects = len({t.get("project") for t in tasks if t.get("project")})
+
+    # AI sessions = conversations count for this user
+    ai_sessions = await db.conversations.count_documents({"user_id": user["id"]})
+
+    # Recent activity (last 8)
+    acts = await db.activity.find({"user_id": user["id"]}, {"_id": 0}).sort("created_at", -1).to_list(8)
+    # Also merge in recent AI conversations
+    recent_convs = await db.conversations.find(
+        {"user_id": user["id"]}, {"_id": 0, "id": 1, "title": 1, "updated_at": 1}
+    ).sort("updated_at", -1).to_list(5)
+    for c in recent_convs:
+        acts.append({
+            "type": "ai_conversation",
+            "title": c.get("title"),
+            "conversation_id": c.get("id"),
+            "created_at": c.get("updated_at"),
+        })
+    acts.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+    recent_activity = acts[:10]
+
+    # Smart insights
+    insights = []
+    if total > 0:
+        if completion_rate >= 80:
+            insights.append(f"You've completed {completion_rate}% of your tasks — excellent momentum.")
+        elif completion_rate >= 50:
+            insights.append(f"You've completed {completion_rate}% of your tasks so far.")
+        else:
+            insights.append(f"Only {completion_rate}% of tasks are done — consider knocking a few off today.")
+    if len(overdue) > 0:
+        insights.append(f"You have {len(overdue)} overdue task{'s' if len(overdue) != 1 else ''}.")
+    if most_productive_day:
+        insights.append(f"{most_productive_day} is your most productive day.")
+    if last_week_completed > 0:
+        direction = "increased" if trend_pct >= 0 else "decreased"
+        insights.append(f"Your productivity {direction} by {abs(trend_pct)}% vs last week.")
+    if ai_sessions >= 5:
+        insights.append(f"You've had {ai_sessions} AI conversations — the assistant is learning your workflow.")
+
+    return {
+        "totals": {
+            "total": total,
+            "completed": len(completed),
+            "pending": len(pending),
+            "overdue": len(overdue),
+            "completion_rate": completion_rate,
+            "ai_sessions": ai_sessions,
+            "active_projects": active_projects,
+        },
+        "this_week_completed": this_week_completed,
+        "this_month_completed": this_month_completed,
+        "trend_pct": trend_pct,
+        "avg_completion_time_hours": avg_completion_time_hours,
+        "most_productive_day": most_productive_day,
+        "most_productive_hour": most_productive_hour,
+        "weekly_series": weekly_series,
+        "trend_series": trend_series,
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+        "recent_activity": recent_activity,
+        "insights": insights,
+    }
 
 
 # ---------------- Automations (placeholder) ----------------
