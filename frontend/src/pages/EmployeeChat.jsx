@@ -6,7 +6,9 @@ import api, { API } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { toast } from "sonner";
-import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck, LifeBuoy } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck, LifeBuoy, Search, Brain } from "lucide-react";
 
 const SUGGESTIONS = [
   "Who is the HR manager?",
@@ -24,11 +26,37 @@ export default function EmployeeChat() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
+  const [convsLoading, setConvsLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [meStats, setMeStats] = useState({ total_conversations: 0, total_messages: 0, memory_count: 0, recent: [] });
+  const [memory, setMemory] = useState({ facts: [] });
   const scrollRef = useRef(null);
 
-  const loadConvs = () => api.get("/conversations").then(r => setConversations(r.data));
+  const loadConvs = () => {
+    setConvsLoading(true);
+    return api.get("/conversations")
+      .then(r => setConversations(r.data))
+      .catch(() => {})
+      .finally(() => setConvsLoading(false));
+  };
+  const loadStats = () => api.get("/me/stats").then(r => setMeStats(r.data)).catch(() => {});
+  const loadMemory = () => api.get("/memory").then(r => setMemory(r.data)).catch(() => {});
 
-  useEffect(() => { loadConvs(); }, []);
+  useEffect(() => { loadConvs(); loadStats(); loadMemory(); }, []);
+
+  const filteredConversations = search.trim()
+    ? conversations.filter(c => (c.title || "").toLowerCase().includes(search.trim().toLowerCase()))
+    : conversations;
+
+  const clearMemory = async () => {
+    try {
+      await api.delete("/memory");
+      setMemory({ facts: [] });
+      toast.success("AI memory cleared");
+    } catch {
+      toast.error("Could not clear memory");
+    }
+  };
   useEffect(() => {
     if (!activeId) { setMessages([]); return; }
     api.get(`/conversations/${activeId}/messages`).then(r => setMessages(r.data));
@@ -83,6 +111,8 @@ export default function EmployeeChat() {
               setMessages((m) => [...m, { id: evt.message_id || `a-${Date.now()}`, role: "assistant", content: acc }]);
               setStreamText("");
               loadConvs();
+              // Refresh stats + memory in the background (memory is extracted server-side after the stream)
+              setTimeout(() => { loadStats(); loadMemory(); }, 4000);
             }
           } catch { /* ignore */ }
         }
@@ -154,13 +184,30 @@ export default function EmployeeChat() {
           <Button data-testid="new-chat-btn" onClick={newChat} className="w-full rounded-md gap-2" variant="outline">
             <Plus className="h-4 w-4" strokeWidth={2} /> {t("new_chat")}
           </Button>
+          <div className="mt-3 relative">
+            <Search className="h-3.5 w-3.5 absolute start-2.5 top-2.5 text-muted-foreground" strokeWidth={1.5} />
+            <Input
+              data-testid="conv-search-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t("search_conversations")}
+              className="h-8 ps-8 text-sm"
+            />
+          </div>
         </div>
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
-            {conversations.length === 0 && (
-              <div className="p-4 text-xs text-muted-foreground text-center">{t("no_history")}</div>
+            {convsLoading && (
+              <div className="p-2 space-y-2">
+                {[0,1,2].map(i => <div key={i} className="h-8 rounded bg-secondary/60 animate-pulse" />)}
+              </div>
             )}
-            {conversations.map((c) => (
+            {!convsLoading && filteredConversations.length === 0 && (
+              <div className="p-4 text-xs text-muted-foreground text-center">
+                {search ? t("no_search_results") : t("no_history")}
+              </div>
+            )}
+            {!convsLoading && filteredConversations.map((c) => (
               <button
                 key={c.id}
                 data-testid={`conv-${c.id}`}
@@ -179,7 +226,47 @@ export default function EmployeeChat() {
           </div>
         </ScrollArea>
         <div className="p-3 border-t border-border">
-          <div className="px-2 py-1.5 text-xs">
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                data-testid="ai-memory-btn"
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+              >
+                <Brain className="h-3.5 w-3.5 text-primary" strokeWidth={1.5} />
+                <span className="flex-1 text-start">{t("ai_memory")}</span>
+                <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-medium">
+                  {memory.facts?.length || 0}
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" side="top" className="w-72 p-4" data-testid="ai-memory-popover">
+              <div className="text-sm font-semibold">{t("ai_memory")}</div>
+              <p className="text-xs text-muted-foreground mt-1">{t("memory_help")}</p>
+              <div className="mt-3 space-y-1 max-h-48 overflow-auto">
+                {(memory.facts || []).length === 0 ? (
+                  <div className="text-xs text-muted-foreground py-3 text-center">{t("no_memory_yet")}</div>
+                ) : (
+                  memory.facts.map((f, i) => (
+                    <div key={i} data-testid={`memory-fact-${i}`} className="text-xs rounded-md border border-border bg-card px-2.5 py-1.5">
+                      {f}
+                    </div>
+                  ))
+                )}
+              </div>
+              {(memory.facts || []).length > 0 && (
+                <Button
+                  data-testid="clear-memory-btn"
+                  variant="outline"
+                  size="sm"
+                  onClick={clearMemory}
+                  className="w-full mt-3 rounded-md gap-2 h-8 text-xs"
+                >
+                  <Trash2 className="h-3 w-3" strokeWidth={1.5} /> {t("clear_memory")}
+                </Button>
+              )}
+            </PopoverContent>
+          </Popover>
+          <div className="px-2 py-1.5 text-xs mt-1">
             <div className="font-medium truncate">{user?.name}</div>
             <div className="text-muted-foreground truncate">{user?.email}</div>
           </div>
@@ -238,9 +325,36 @@ export default function EmployeeChat() {
                   <Sparkles className="h-6 w-6" strokeWidth={1.5} />
                 </div>
                 <div>
-                  <h2 className="display text-3xl font-bold tracking-tight">Ask anything about your workplace.</h2>
-                  <p className="text-muted-foreground mt-2">Sourced answers from your company&apos;s directory and policies.</p>
+                  <h2 className="display text-3xl font-bold tracking-tight">
+                    {user?.name ? `${t("greeting")}, ${user.name.split(" ")[0]}.` : t("greeting")}
+                  </h2>
+                  <p className="text-muted-foreground mt-2">{t("empty_sub")}</p>
                 </div>
+                {(meStats.total_conversations > 0 || meStats.memory_count > 0) && (
+                  <div className="flex flex-wrap justify-center gap-2 pt-1" data-testid="chat-activity-strip">
+                    <StatPill label={t("stat_conversations_short")} value={meStats.total_conversations} />
+                    <StatPill label={t("stat_messages_short")} value={meStats.total_messages} />
+                    <StatPill label={t("stat_memory_short")} value={meStats.memory_count} />
+                  </div>
+                )}
+                {meStats.recent?.length > 0 && (
+                  <div className="max-w-xl mx-auto text-start">
+                    <div className="text-xs uppercase tracking-widest text-muted-foreground">{t("recent")}</div>
+                    <div className="mt-2 space-y-1">
+                      {meStats.recent.map((r) => (
+                        <button
+                          key={r.id}
+                          data-testid={`recent-conv-${r.id}`}
+                          onClick={() => setActiveId(r.id)}
+                          className="w-full text-start flex items-center gap-2 px-3 py-2 rounded-md hover:bg-secondary transition-colors text-sm"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" strokeWidth={1.5} />
+                          <span className="truncate">{r.title}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="text-xs uppercase tracking-widest text-muted-foreground pt-4">{t("suggested")}</div>
                 <div className="grid sm:grid-cols-2 gap-2 max-w-xl mx-auto">
                   {SUGGESTIONS.map((s, i) => (
@@ -394,3 +508,13 @@ function MessageBubble({ m }) {
     </div>
   );
 }
+
+function StatPill({ label, value }) {
+  return (
+    <div className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs">
+      <span className="font-semibold">{value}</span>
+      <span className="text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
