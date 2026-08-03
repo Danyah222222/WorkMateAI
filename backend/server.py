@@ -3,6 +3,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal
@@ -26,6 +30,9 @@ client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
 app = FastAPI(title="WorkMate AI API")
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api = APIRouter(prefix="/api")
 security = HTTPBearer()
 
@@ -302,7 +309,8 @@ async def sync_roles_migration():
 
 # ---------------- Auth Routes ----------------
 @api.post("/auth/register", response_model=TokenResponse)
-async def register(payload: RegisterRequest):
+@limiter.limit("10/hour")
+async def register(request: Request, payload: RegisterRequest):
     email = payload.email.lower().strip()
     existing = await db.users.find_one({"email": email})
     if existing:
@@ -351,7 +359,8 @@ async def register(payload: RegisterRequest):
 
 
 @api.post("/auth/login", response_model=TokenResponse)
-async def login(payload: LoginRequest):
+@limiter.limit("20/minute")
+async def login(request: Request, payload: LoginRequest):
     user = await db.users.find_one({"email": payload.email.lower()})
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(401, "Invalid email or password")
@@ -364,6 +373,231 @@ async def login(payload: LoginRequest):
 async def me(user=Depends(get_current_user)):
     workspace = await get_workspace(user["company_id"])
     return user_to_out(user, (workspace or {}).get("name"))
+
+
+# ---------------- Profile / Password ----------------
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    avatar: Optional[str] = None  # base64 data URL
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@api.get("/profile")
+async def get_profile(user=Depends(get_current_user)):
+    profile = await db.users.find_one(
+        {"id": user["id"]},
+        {"_id": 0, "password_hash": 0},
+    )
+    workspace = await get_workspace(user["company_id"])
+    profile["workspace_name"] = (workspace or {}).get("name")
+    return profile
+
+
+@api.patch("/profile")
+async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user)):
+    # Whitelist only editable fields — never expose role/email/company_id/password
+    updates = {}
+    if payload.name is not None:
+        n = payload.name.strip()
+        if not n or len(n) > 80:
+            raise HTTPException(400, "Name must be 1-80 characters")
+        updates["name"] = n
+    if payload.avatar is not None:
+        if payload.avatar and len(payload.avatar) > 400_000:  # ~300KB base64
+            raise HTTPException(413, "Avatar too large (max ~300KB)")
+        updates["avatar"] = payload.avatar or None
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one({"id": user["id"]}, {"$set": updates})
+        await db.activity.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "company_id": user["company_id"],
+            "type": "profile_updated",
+            "title": "Profile updated",
+            "created_at": updates["updated_at"],
+        })
+    profile = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
+    return profile
+
+
+@api.post("/auth/change-password")
+@limiter.limit("5/minute")
+async def change_password(request: Request, payload: ChangePasswordRequest, user=Depends(get_current_user)):
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(401, "Current password is incorrect")
+    if len(payload.new_password) < 6:
+        raise HTTPException(400, "New password must be at least 6 characters")
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password)}},
+    )
+    return {"ok": True}
+
+
+@api.post("/auth/forgot-password")
+@limiter.limit("5/hour")
+async def forgot_password(request: Request, payload: ForgotPasswordRequest):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    # Always return 200 to avoid email enumeration
+    token = None
+    if user:
+        token = _new_invite_token()
+        await db.password_resets.insert_one({
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "email": email,
+            "token": token,
+            "used": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        })
+    # If email delivery is wired later (Resend), send here.
+    # For now, return the token in-response for MVP so the caller can display the link.
+    return {"ok": True, "dev_token": token}
+
+
+@api.post("/auth/reset-password")
+@limiter.limit("10/hour")
+async def reset_password(request: Request, payload: ResetPasswordRequest):
+    if len(payload.new_password) < 6:
+        raise HTTPException(400, "New password must be at least 6 characters")
+    reset = await db.password_resets.find_one({"token": payload.token, "used": False})
+    if not reset:
+        raise HTTPException(400, "Invalid or already-used reset link")
+    if reset.get("expires_at") and reset["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(400, "This reset link has expired")
+    await db.users.update_one(
+        {"id": reset["user_id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password)}},
+    )
+    await db.password_resets.update_one(
+        {"id": reset["id"]},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+# ---------------- Notifications (backed by activity feed) ----------------
+@api.get("/notifications")
+async def list_notifications(limit: int = 50, user=Depends(get_current_user)):
+    items = await db.activity.find(
+        {"company_id": user["company_id"]},
+        {"_id": 0},
+    ).sort("created_at", -1).to_list(limit)
+    read_ids = set((await db.notifications_read.find_one({"user_id": user["id"]}) or {}).get("ids", []))
+    for it in items:
+        it["read"] = it.get("id") in read_ids
+    unread = sum(1 for it in items if not it["read"])
+    return {"items": items, "unread": unread}
+
+
+@api.post("/notifications/read-all")
+async def mark_all_read(user=Depends(get_current_user)):
+    ids = [a["id"] async for a in db.activity.find(
+        {"company_id": user["company_id"]}, {"id": 1},
+    )]
+    await db.notifications_read.update_one(
+        {"user_id": user["id"]},
+        {"$set": {"user_id": user["id"], "ids": ids, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "read": len(ids)}
+
+
+# ---------------- Task comments ----------------
+class CommentIn(BaseModel):
+    content: str
+
+
+@api.get("/tasks/{task_id}/comments")
+async def list_comments(task_id: str, user=Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    comments = await db.task_comments.find(
+        {"task_id": task_id, "company_id": user["company_id"]},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+    return comments
+
+
+@api.post("/tasks/{task_id}/comments")
+async def add_comment(task_id: str, payload: CommentIn, user=Depends(get_current_user)):
+    task = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]})
+    if not task:
+        raise HTTPException(404, "Task not found")
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(400, "Comment cannot be empty")
+    if len(content) > 4000:
+        raise HTTPException(400, "Comment too long")
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "task_id": task_id,
+        "company_id": user["company_id"],
+        "author_id": user["id"],
+        "author_name": user["name"],
+        "content": content,
+        "created_at": now,
+    }
+    await db.task_comments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/tasks/{task_id}/comments/{comment_id}")
+async def delete_comment(task_id: str, comment_id: str, user=Depends(get_current_user)):
+    c = await db.task_comments.find_one({"id": comment_id, "task_id": task_id, "company_id": user["company_id"]})
+    if not c:
+        raise HTTPException(404, "Comment not found")
+    if c["author_id"] != user["id"] and user["role"] not in ("owner", "admin", "manager"):
+        raise HTTPException(403, "Cannot delete another user's comment")
+    await db.task_comments.delete_one({"id": comment_id, "company_id": user["company_id"]})
+    return {"ok": True}
+
+
+# ---------------- CSV Export ----------------
+def _csv_response(filename: str, rows: list, columns: list) -> StreamingResponse:
+    def gen():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(columns)
+        for r in rows:
+            w.writerow([r.get(c, "") for c in columns])
+        yield buf.getvalue()
+    return StreamingResponse(
+        gen(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/tasks/export.csv")
+async def export_tasks(project_id: Optional[str] = None, user=Depends(get_current_user)):
+    q = {"company_id": user["company_id"]}
+    if project_id:
+        q["project_id"] = project_id
+    elif user["role"] == "employee":
+        q["$or"] = [{"user_id": user["id"]}, {"assigned_to": user["id"]}]
+    tasks = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    cols = ["title", "status", "kanban_status", "priority", "project", "due_date", "created_at", "completed_at"]
+    return _csv_response("tasks.csv", tasks, cols)
 
 
 # ---------------- Company / Settings ----------------
@@ -1755,6 +1989,22 @@ app.add_middleware(
 async def startup():
     await seed_technova()
     await sync_roles_migration()
+    # Performance: create indexes for hot query paths (idempotent)
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("company_id")
+        await db.tasks.create_index([("company_id", 1), ("user_id", 1)])
+        await db.tasks.create_index([("company_id", 1), ("project_id", 1)])
+        await db.tasks.create_index([("company_id", 1), ("assigned_to", 1)])
+        await db.projects.create_index([("company_id", 1), ("status", 1)])
+        await db.conversations.create_index([("user_id", 1), ("updated_at", -1)])
+        await db.messages.create_index([("conversation_id", 1), ("created_at", 1)])
+        await db.activity.create_index([("company_id", 1), ("created_at", -1)])
+        await db.task_comments.create_index([("task_id", 1), ("created_at", 1)])
+        await db.invitations.create_index("token")
+        await db.password_resets.create_index("token")
+    except Exception as e:
+        logger.warning(f"Index setup warning: {e}")
 
 
 @app.on_event("shutdown")

@@ -109,7 +109,8 @@ export default function Login() {
               {loading ? "Signing in…" : t("login_btn")}
             </Button>
             <div className="text-sm text-center text-muted-foreground">
-              Don&apos;t have a workspace?{" "}
+              <Link to="/forgot-password" className="text-primary font-medium mr-3" data-testid="forgot-password-link">Forgot password?</Link>
+              · Don&apos;t have a workspace?{" "}
               <Link to="/register" className="text-primary font-medium" data-testid="create-workspace-link">Create one</Link>
             </div>
           </form>
