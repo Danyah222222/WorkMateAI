@@ -8,59 +8,78 @@ Build "WorkMate AI", a modern full-stack web application serving as a private AI
 - Admin Dashboard: knowledge (PDF/CSV uploads), team members, tasks, and Kanban projects
 - Employee Chat with Claude Sonnet 4.5 (streaming, history, memory extraction)
 - n8n workflow automations (Leave Request, IT Support) triggered from chat
-- Production-readiness: password reset, profile, notifications, CSV exports, task comments, rate-limiting
+- Production-ready user account system (Feb 2026)
 
 ## Explicit User Constraints
-- SKIP Resend email delivery, Task attachments, Calendar views, PDF exports
-- Password reset token surfaced in-response as `dev_token` and shown in UI as copyable link (MVP fallback until email is wired)
-- Maintain workspace isolation (`company_id`) rigorously; UUID4 string IDs (no Mongo ObjectId)
-- Do NOT redesign existing UI — integrate additions into current layout
+- Resend integration: **graceful fallback pattern** — if `RESEND_API_KEY` is set in `.env`, emails are sent; otherwise the token/verification link is returned in the API response and shown in the UI. No key is required today
+- Password policy (backend `validate_password_strength`): min 8 chars + must contain letter + digit
+- Email-change verification: link is sent to the NEW email; change is applied only when the link is clicked (single-use token, 2h expiry)
+- Welcome email is sent on register and accept-invite (no-op when Resend isn't configured)
+- SKIPPED (still): Task attachments, Calendar views, PDF exports
+- Do NOT redesign existing UI — integrate additions into the current layout
 
 ## Architecture
 - Frontend: React 19, Tailwind, Shadcn UI, React Router 7, Recharts, Axios
-- Backend: FastAPI (async), Motor, JWT auth (bcrypt), slowapi (rate limiting)
+- Backend: FastAPI (async), Motor, JWT (bcrypt), slowapi (rate limiting), Resend SDK (optional)
 - DB: MongoDB — schemaless, Pydantic-validated, UUID4 string IDs
 - LLM: Claude Sonnet 4.5 via Emergent Universal Key
 
 ## What's Been Implemented (Feb 2026)
-- Base multi-tenant SaaS with workspaces, invitations, role-based access
+- Multi-tenant SaaS foundation: workspaces, invitations, role-based access
 - AI chat with source-grounded answers, thumbs feedback, personalized memory
 - n8n webhook proxies (Leave, IT Support)
-- Kanban Projects with drag-and-drop, auto-status
+- Kanban Projects, drag-and-drop, auto-status
 - Productivity dashboard with charts
-- Rate limiting (`slowapi`), MongoDB indexes
-- Backend endpoints: password reset, profile, notifications, task comments, CSV export
-- Frontend pages: ForgotPassword, ResetPassword, Profile, NotificationBell
-- **Feb 2026 — Password Recovery Workflow (COMPLETE, E2E TESTED 9/9)**
-  - `POST /api/auth/forgot-password` — rate-limited 5/hr, returns `{ok, dev_token}`, no enumeration for unknown emails
-  - `POST /api/auth/reset-password` — rate-limited 10/hr, validates token+expiry+used, single-use enforced
-  - `/forgot-password` page: email input → sent card with copyable reset link (dev_token)
-  - `/reset-password/:token` page: validates, min 6 chars, toasts, redirects to /login
-  - Forgot link on /login page
+- Rate limiting (slowapi), MongoDB indexes
+- Task comments backend, CSV export backend, notifications UI
+- Password recovery (forgot/reset) — E2E tested
+- **Feb 2026 — Production User Account System (COMPLETE, backend 24/24 + frontend 18/18)**
+  - Password strength enforced on register / accept-invite / change / reset (8+ chars, letter + digit)
+  - Live `PasswordStrength` meter component on all password entry forms
+  - Forgot / reset password with Resend-or-dev-token fallback
+  - Change password (audit logged as `password_changed`)
+  - Change email with verification link to NEW address (audit logged as `email_change_requested` → `email_changed`), pending-email banner, cancel-change, single-use tokens
+  - Profile page shows: avatar upload, display name edit, workspace, role, member-since date, current email, pending-email banner
+  - New `/verify-email/:token` page
+  - `email_service.py` module with graceful Resend fallback and professional HTML templates (welcome, password reset, email-change verification)
+  - Audit log entries for `password_changed`, `password_reset_requested`, `email_change_requested`, `email_changed`, `profile_updated`
+  - AuthContext 401 interceptor now whitelists change-password / email-change / login so form-level 401s don't kick users out
+  - Mobile responsive polish on all auth pages + Profile; `aria-hidden` on decorative icons, `aria-label` on icon buttons, `noValidate` on forms
 
 ## Prioritized Backlog
 
 ### P0 (Next Up)
-- Task Comments UI in AdminDashboard (backend `POST /api/tasks/{id}/comments` ready — needs UI thread in task detail modal)
-- CSV Export button in AdminDashboard Projects/Tasks tab (backend `GET /api/tasks/export/csv` ready)
+- Task Comments UI in AdminDashboard task detail modal (backend ready)
+- CSV Export button in AdminDashboard Projects/Tasks tab (backend ready)
 
 ### P1
-- Avatar upload on Profile page (base64, ties to `PATCH /api/profile`)
-- Activity/Audit history UI (backend `activity` collection exists)
-- Notifications UI polish + unread counter in NotificationBell
+- Activity/Audit history UI tab (backend `activity` collection is rich now)
+- Refactor `AdminDashboard.jsx` (~2000 LOC) and `server.py` (~2200 LOC) into sub-modules for maintainability
+- Expose invite token in `POST /api/invites` dev response to unblock E2E for accept-invite policy
+- Consider `X-Forwarded-For`-aware key_func for slowapi (per-user limits behind ingress)
 
 ### P2
-- Refactor `AdminDashboard.jsx` (~2000 LOC) into sub-components
 - Move JWT out of localStorage (httpOnly cookies) to reduce XSS surface
 
 ### Deferred (Explicitly Skipped by User)
-- Resend email delivery, Task attachments, Calendar view, PDF exports
+- Task attachments, Calendar view, PDF exports
 
-## Key API Endpoints
-- Auth: `/api/auth/login`, `/register`, `/forgot-password`, `/reset-password`, `/change-password`
-- Profile: `GET /api/profile`, `PATCH /api/profile`
-- Notifications: `GET /api/notifications`, `PATCH /api/notifications/{id}/read`
-- Tasks: `POST /api/tasks/{id}/comments`, `GET /api/tasks/export/csv`
+## Key API Endpoints (User Account)
+- `POST /api/auth/register` — 8+ chars, letter + digit; sends welcome email
+- `POST /api/auth/login`
+- `POST /api/auth/forgot-password` → `{ok, email_sent, dev_token?}`
+- `POST /api/auth/reset-password` — validates single-use token, applies strength policy
+- `POST /api/auth/change-password` — verifies current, applies strength policy, audit-logged
+- `POST /api/auth/accept-invite` — sends welcome email
+- `GET /api/profile` — returns identity + `created_at` + `pending_email` + `email_delivery_enabled`
+- `PATCH /api/profile` — name + avatar
+- `POST /api/profile/email/request-change` — sends verification link (or returns dev_token)
+- `POST /api/profile/email/verify` — applies email change (single-use)
+- `POST /api/profile/email/cancel-change` — invalidates any pending change
 
 ## Test Credentials
-See `/app/memory/test_credentials.md`
+See `/app/memory/test_credentials.md` (admin@technova.com / admin123 remains authoritative)
+
+## Env vars (backend/.env)
+- Required: `MONGO_URL`, `DB_NAME`, `EMERGENT_LLM_KEY`, `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_HOURS`
+- Optional (email delivery): `RESEND_API_KEY`, `SENDER_EMAIL`, `SENDER_NAME`, `APP_URL`

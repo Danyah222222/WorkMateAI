@@ -39,10 +39,19 @@ export function AuthProvider({ children }) {
     bootstrap();
 
     // Global handler: if any API call returns 401, clear session and force re-login.
+    // EXCEPT: endpoints where 401 legitimately means "wrong password entered in a form",
+    // not "session invalid" — those must stay signed in so the user can retry.
+    const SKIP_AUTO_LOGOUT = [
+      "/auth/change-password",
+      "/profile/email/request-change",
+      "/auth/login", // login failure is not a session invalidation
+    ];
     const interceptorId = api.interceptors.response.use(
       (res) => res,
       (err) => {
-        if (err.response?.status === 401 && localStorage.getItem("wm_token")) {
+        const url = err.config?.url || "";
+        const isFormAuth = SKIP_AUTO_LOGOUT.some((p) => url.endsWith(p) || url.includes(p));
+        if (err.response?.status === 401 && !isFormAuth && localStorage.getItem("wm_token")) {
           localStorage.removeItem("wm_token");
           setUser(null);
         }
