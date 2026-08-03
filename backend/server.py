@@ -12,9 +12,16 @@ from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import os, uuid, io, csv, logging, jwt, bcrypt, json
+import os, uuid, io, csv, logging, jwt, bcrypt, json, re as _re_pw
 import pypdf
 from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+from email_service import (
+    send_email,
+    is_configured as email_is_configured,
+    welcome_template,
+    password_reset_template,
+    email_change_verify_template,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -168,6 +175,51 @@ def create_token(user_id: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+# Password policy: >= 8 chars, at least one letter and one number.
+_PW_HAS_LETTER = _re_pw.compile(r"[A-Za-z]")
+_PW_HAS_DIGIT = _re_pw.compile(r"\d")
+
+
+def validate_password_strength(pw: str) -> None:
+    if not isinstance(pw, str) or len(pw) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters")
+    if not _PW_HAS_LETTER.search(pw):
+        raise HTTPException(400, "Password must contain at least one letter")
+    if not _PW_HAS_DIGIT.search(pw):
+        raise HTTPException(400, "Password must contain at least one number")
+
+
+APP_URL_ENV = os.environ.get("APP_URL", "").strip().rstrip("/")
+
+
+def app_origin(request: Optional[Request] = None) -> str:
+    """Best-effort public origin for building links in emails."""
+    if APP_URL_ENV:
+        return APP_URL_ENV
+    if request is not None:
+        origin = request.headers.get("origin") or request.headers.get("referer")
+        if origin:
+            # strip path if referer
+            m = _re_pw.match(r"^(https?://[^/]+)", origin)
+            if m:
+                return m.group(1)
+    return ""
+
+
+async def _log_activity(company_id: str, user_id: str, type_: str, title: str, meta: Optional[dict] = None):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "company_id": company_id,
+        "type": type_,
+        "title": title,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if meta:
+        doc["meta"] = meta
+    await db.activity.insert_one(doc)
+
+
 async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -315,8 +367,7 @@ async def register(request: Request, payload: RegisterRequest):
     existing = await db.users.find_one({"email": email})
     if existing:
         raise HTTPException(409, "An account with that email already exists")
-    if len(payload.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
+    validate_password_strength(payload.password)
     if not payload.workspace_name.strip():
         raise HTTPException(400, "Workspace name is required")
 
@@ -355,6 +406,17 @@ async def register(request: Request, payload: RegisterRequest):
     }
     await db.users.insert_one(user_doc)
     token = create_token(user_id)
+    # Welcome email (graceful no-op if RESEND_API_KEY not set)
+    try:
+        origin = app_origin(request)
+        login_url = f"{origin}/login" if origin else "/login"
+        await send_email(
+            to=email,
+            subject=f"Welcome to WorkMate AI — {payload.workspace_name.strip()}",
+            html=welcome_template(user_doc["name"], payload.workspace_name.strip(), login_url),
+        )
+    except Exception:
+        pass
     return TokenResponse(access_token=token, user=user_to_out(user_doc, payload.workspace_name.strip()))
 
 
@@ -395,6 +457,15 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class EmailChangeRequest(BaseModel):
+    new_email: EmailStr
+    current_password: str
+
+
+class EmailChangeVerifyRequest(BaseModel):
+    token: str
+
+
 @api.get("/profile")
 async def get_profile(user=Depends(get_current_user)):
     profile = await db.users.find_one(
@@ -403,6 +474,14 @@ async def get_profile(user=Depends(get_current_user)):
     )
     workspace = await get_workspace(user["company_id"])
     profile["workspace_name"] = (workspace or {}).get("name")
+    # Attach pending email change (if any) so the UI can show a banner
+    pending = await db.email_changes.find_one(
+        {"user_id": user["id"], "used": False},
+        {"_id": 0, "new_email": 1, "created_at": 1, "expires_at": 1},
+    )
+    if pending and pending.get("expires_at", "") > datetime.now(timezone.utc).isoformat():
+        profile["pending_email"] = pending["new_email"]
+    profile["email_delivery_enabled"] = email_is_configured()
     return profile
 
 
@@ -422,14 +501,7 @@ async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user))
     if updates:
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         await db.users.update_one({"id": user["id"]}, {"$set": updates})
-        await db.activity.insert_one({
-            "id": str(uuid.uuid4()),
-            "user_id": user["id"],
-            "company_id": user["company_id"],
-            "type": "profile_updated",
-            "title": "Profile updated",
-            "created_at": updates["updated_at"],
-        })
+        await _log_activity(user["company_id"], user["id"], "profile_updated", "Profile updated")
     profile = await db.users.find_one({"id": user["id"]}, {"_id": 0, "password_hash": 0})
     return profile
 
@@ -439,12 +511,12 @@ async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user))
 async def change_password(request: Request, payload: ChangePasswordRequest, user=Depends(get_current_user)):
     if not verify_password(payload.current_password, user["password_hash"]):
         raise HTTPException(401, "Current password is incorrect")
-    if len(payload.new_password) < 6:
-        raise HTTPException(400, "New password must be at least 6 characters")
+    validate_password_strength(payload.new_password)
     await db.users.update_one(
         {"id": user["id"]},
         {"$set": {"password_hash": hash_password(payload.new_password)}},
     )
+    await _log_activity(user["company_id"], user["id"], "password_changed", "Password changed")
     return {"ok": True}
 
 
@@ -455,6 +527,7 @@ async def forgot_password(request: Request, payload: ForgotPasswordRequest):
     user = await db.users.find_one({"email": email})
     # Always return 200 to avoid email enumeration
     token = None
+    email_sent = False
     if user:
         token = _new_invite_token()
         await db.password_resets.insert_one({
@@ -466,16 +539,28 @@ async def forgot_password(request: Request, payload: ForgotPasswordRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "expires_at": (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
         })
-    # If email delivery is wired later (Resend), send here.
-    # For now, return the token in-response for MVP so the caller can display the link.
-    return {"ok": True, "dev_token": token}
+        await _log_activity(user["company_id"], user["id"], "password_reset_requested",
+                            "Password reset requested")
+        origin = app_origin(request)
+        if origin:
+            reset_url = f"{origin}/reset-password/{token}"
+            email_sent = await send_email(
+                to=email,
+                subject="Reset your WorkMate password",
+                html=password_reset_template(reset_url),
+            )
+    # If email delivery is wired (Resend), it goes to inbox. Otherwise we surface the token
+    # so the frontend can display a copyable link (MVP fallback).
+    resp = {"ok": True, "email_sent": email_sent}
+    if not email_sent:
+        resp["dev_token"] = token
+    return resp
 
 
 @api.post("/auth/reset-password")
 @limiter.limit("10/hour")
 async def reset_password(request: Request, payload: ResetPasswordRequest):
-    if len(payload.new_password) < 6:
-        raise HTTPException(400, "New password must be at least 6 characters")
+    validate_password_strength(payload.new_password)
     reset = await db.password_resets.find_one({"token": payload.token, "used": False})
     if not reset:
         raise HTTPException(400, "Invalid or already-used reset link")
@@ -489,7 +574,95 @@ async def reset_password(request: Request, payload: ResetPasswordRequest):
         {"id": reset["id"]},
         {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
     )
+    # Audit log
+    urec = await db.users.find_one({"id": reset["user_id"]}, {"company_id": 1})
+    if urec:
+        await _log_activity(urec["company_id"], reset["user_id"], "password_changed",
+                            "Password reset completed")
     return {"ok": True}
+
+
+# ---------------- Email change (with verification) ----------------
+@api.post("/profile/email/request-change")
+@limiter.limit("5/hour")
+async def request_email_change(request: Request, payload: EmailChangeRequest, user=Depends(get_current_user)):
+    if not verify_password(payload.current_password, user["password_hash"]):
+        raise HTTPException(401, "Current password is incorrect")
+    new_email = payload.new_email.lower().strip()
+    if new_email == user["email"].lower():
+        raise HTTPException(400, "That is already your current email")
+    conflict = await db.users.find_one({"email": new_email})
+    if conflict:
+        raise HTTPException(409, "That email is already in use")
+    # Invalidate any previous pending changes for this user
+    await db.email_changes.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    token = _new_invite_token()
+    now = datetime.now(timezone.utc)
+    await db.email_changes.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "old_email": user["email"],
+        "new_email": new_email,
+        "token": token,
+        "used": False,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=2)).isoformat(),
+    })
+    await _log_activity(user["company_id"], user["id"], "email_change_requested",
+                        f"Email change requested → {new_email}")
+    email_sent = False
+    origin = app_origin(request)
+    if origin:
+        verify_url = f"{origin}/verify-email/{token}"
+        email_sent = await send_email(
+            to=new_email,
+            subject="Confirm your new WorkMate email",
+            html=email_change_verify_template(verify_url, user["email"]),
+        )
+    resp = {"ok": True, "pending_email": new_email, "email_sent": email_sent}
+    if not email_sent:
+        resp["dev_token"] = token  # fallback so UI can surface the link
+    return resp
+
+
+@api.post("/profile/email/verify")
+@limiter.limit("10/hour")
+async def verify_email_change(request: Request, payload: EmailChangeVerifyRequest):
+    rec = await db.email_changes.find_one({"token": payload.token, "used": False})
+    if not rec:
+        raise HTTPException(400, "Invalid or already-used verification link")
+    if rec.get("expires_at") and rec["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(400, "This verification link has expired")
+    conflict = await db.users.find_one({"email": rec["new_email"]})
+    if conflict and conflict["id"] != rec["user_id"]:
+        raise HTTPException(409, "That email is now in use by another account")
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {"email": rec["new_email"], "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await db.email_changes.update_one(
+        {"id": rec["id"]},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    urec = await db.users.find_one({"id": rec["user_id"]}, {"company_id": 1, "email": 1, "name": 1})
+    if urec:
+        await _log_activity(urec["company_id"], rec["user_id"], "email_changed",
+                            f"Email changed → {rec['new_email']}")
+    return {"ok": True, "new_email": rec["new_email"]}
+
+
+@api.post("/profile/email/cancel-change")
+async def cancel_email_change(user=Depends(get_current_user)):
+    res = await db.email_changes.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "cancelled": res.modified_count}
+
+
 
 
 # ---------------- Notifications (backed by activity feed) ----------------
@@ -1131,7 +1304,7 @@ async def lookup_invitation(token: str):
 
 
 @api.post("/auth/accept-invite", response_model=TokenResponse)
-async def accept_invite(payload: AcceptInviteRequest):
+async def accept_invite(payload: AcceptInviteRequest, request: Request):
     inv = await db.invitations.find_one({"token": payload.token})
     if not inv:
         raise HTTPException(404, "Invitation not found")
@@ -1139,8 +1312,7 @@ async def accept_invite(payload: AcceptInviteRequest):
         raise HTTPException(400, "Invitation is no longer valid")
     if inv.get("expires_at") and inv["expires_at"] < datetime.now(timezone.utc).isoformat():
         raise HTTPException(400, "Invitation has expired")
-    if len(payload.password) < 6:
-        raise HTTPException(400, "Password must be at least 6 characters")
+    validate_password_strength(payload.password)
 
     existing = await db.users.find_one({"email": inv["email"]})
     if existing:
@@ -1164,6 +1336,17 @@ async def accept_invite(payload: AcceptInviteRequest):
     )
     workspace = await get_workspace(inv["company_id"])
     token = create_token(user_id)
+    # Welcome email (graceful no-op if RESEND_API_KEY not set)
+    try:
+        origin = app_origin(request)
+        login_url = f"{origin}/login" if origin else "/login"
+        await send_email(
+            to=user_doc["email"],
+            subject=f"Welcome to WorkMate AI — {(workspace or {}).get('name') or 'your workspace'}",
+            html=welcome_template(user_doc["name"], (workspace or {}).get("name"), login_url),
+        )
+    except Exception:
+        pass
     return TokenResponse(access_token=token, user=user_to_out(user_doc, (workspace or {}).get("name")))
 
 
@@ -2003,6 +2186,8 @@ async def startup():
         await db.task_comments.create_index([("task_id", 1), ("created_at", 1)])
         await db.invitations.create_index("token")
         await db.password_resets.create_index("token")
+        await db.email_changes.create_index("token")
+        await db.email_changes.create_index([("user_id", 1), ("used", 1)])
     except Exception as e:
         logger.warning(f"Index setup warning: {e}")
 

@@ -1,0 +1,39 @@
+{
+  "summary": "Full-stack E2E validation of WorkMate AI User Account Management (iteration 11). Backend: 24 pytest cases passed + 1 skipped (accept-invite skipped — /api/invites did not return an invite token in this build, non-blocking). Coverage: password policy (register), forgot/reset password with dev_token fallback, change-password (wrong current 401, weak rejected, success + activity log), profile fields presence, email-change request (wrong pw 401 / same email 400 / conflict 409 / success with dev_token / second request invalidates first), verify-email (garbage 400, valid success, single-use), cancel-change, activity log entries (password_changed, email_change_requested, email_changed), rate-limit spot check (forgot-password 5/hr → 429 confirmed via both pytest and direct curl). Frontend: 18/18 UI scenarios passed — forgot-password card + dev-link block + copy button + no 'check inbox' wording, no-enumeration for unknown email, reset-password strength meter (weak/strong), short-password blocked, valid reset → /login, all Profile test-ids present, account-created-at shows 'July 20, 2026' (real date), change-password wrong/weak/success + restore, email-change same-email + conflict + valid → dev-link + pending banner + cancel + verify success + revert, invalid verify-token error page + back button, register password-strength + weak submit blocked, mobile viewport (375x800) profile has no horizontal scroll, employee login still works. Admin restored to admin@technova.com / admin123.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/invites (accept-invite path)", "issue": "Invite creation response did not expose the token field expected by tests; accept-invite password-policy check was skipped. Verify accept-invite manually or expose token in dev mode for e2e."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AuthContext axios response interceptor", "issue": "Global 401 handler in /app/frontend/src/contexts/AuthContext.jsx (line 41-51) clears wm_token and logs the user out for ANY 401, including /api/auth/change-password (wrong current password) and /api/profile/email/request-change (wrong current password). This forces a full re-login mid-flow and is a real UX bug. Fix: exclude these endpoints from the auto-logout branch, or only auto-logout on 401 from /auth/me / global auth checks.", "selector": "n/a", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_account_management.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [
+    "Fix AuthContext response interceptor to NOT log out on 401 from /auth/change-password and /profile/email/* endpoints — only auto-logout on session-expired 401s (e.g., from /auth/me or missing/expired token). This is a real UX regression: entering a wrong current password on Profile currently kicks the user back to /login.",
+    "(Minor) Expose invite token in /api/invites response body (or at least in a dev/admin-only field) so E2E tests can exercise the accept-invite password policy path without DB introspection."
+  ],
+  "critical_code_review_comments": [
+    "AuthContext 401 auto-logout is too aggressive — treat wrong-current-password 401s from /auth/change-password and /profile/email/request-change as normal form errors, not session invalidation.",
+    "slowapi Limiter uses get_remote_address which behind an ingress may collapse many users to one IP; behavior is fine for MVP but consider X-Forwarded-For key_func for accurate per-user limiting in prod.",
+    "server.py exceeds 2100 lines — consider splitting into modules (auth, profile, tasks, projects, notifications) for maintainability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_account_management.py (new)"
+  ],
+  "success_rate": {"backend": "100% (24/24, 1 skipped)", "frontend": "100% (18/18)"},
+  "test_credentials": "admin@technova.com / admin123 (restored after all mutations). Employees still use employee123.",
+  "seed_data_creation": "Created a handful of TEST_ prefixed registered users and workspaces during password-policy testing; not cleaned up (no delete endpoint). Test emails: TEST_<uuid>@example.com. Email-change flow created transient pending_email records that were all either cancelled, verified & reverted, or invalidated.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Rate limits are per-IP per-hour (5/hr for forgot-password and request-email-change). If backend hasn't been restarted recently, expect 429s on repeated E2E runs — restart backend before running full suite. slowapi state is in-memory. Admin creds must remain admin@technova.com / admin123. Known issue: AuthContext logs out on ANY 401 (see action_items).",
+  "rca of the issue": "Wrong-current-password on change-password/email-change returns 401 (correct per API). Frontend AuthContext (contexts/AuthContext.jsx L41-51) has a global axios response interceptor that clears wm_token on any 401 while wm_token exists — so entering a wrong current password kicks the user out. Reproduction: log in as admin, visit /profile, enter wrong current password in change-password form, submit → observe redirect to /login. Mitigation: whitelist the endpoints /api/auth/change-password and /api/profile/email/* from the auto-logout branch, e.g. check err.config.url before invalidating the session."
+}

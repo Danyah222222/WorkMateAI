@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { Sparkles, ArrowLeft } from "lucide-react";
+import PasswordStrength, { isPasswordStrong } from "@/components/PasswordStrength";
 
 export default function Register() {
   const navigate = useNavigate();
@@ -19,6 +20,10 @@ export default function Register() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!isPasswordStrong(form.password)) {
+      toast.error("Password must be at least 8 characters and include a letter and a number");
+      return;
+    }
     setLoading(true);
     try {
       const res = await api.post("/auth/register", form);
@@ -118,9 +123,10 @@ export default function Register() {
                   value={form.password}
                   onChange={(e) => setForm({...form, password: e.target.value})}
                   required
-                  minLength={6}
+                  minLength={8}
                   autoComplete="new-password"
                 />
+                <PasswordStrength value={form.password} />
               </div>
             </div>
 

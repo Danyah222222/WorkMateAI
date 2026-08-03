@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { Sparkles, ArrowLeft } from "lucide-react";
+import PasswordStrength, { isPasswordStrong } from "@/components/PasswordStrength";
 
 export default function AcceptInvite() {
   const { token } = useParams();
@@ -26,6 +27,10 @@ export default function AcceptInvite() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!isPasswordStrong(form.password)) {
+      toast.error("Password must be at least 8 characters and include a letter and a number");
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await api.post("/auth/accept-invite", {
@@ -102,9 +107,10 @@ export default function AcceptInvite() {
                     value={form.password}
                     onChange={(e) => setForm({...form, password: e.target.value})}
                     required
-                    minLength={6}
+                    minLength={8}
                     autoComplete="new-password"
                   />
+                  <PasswordStrength value={form.password} />
                 </div>
                 <Button type="submit" disabled={submitting} className="w-full h-11 rounded-md" data-testid="invite-submit-btn">
                   {submitting ? "Joining…" : "Accept & join workspace"}

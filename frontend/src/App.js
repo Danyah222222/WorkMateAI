@@ -10,6 +10,7 @@ import AcceptInvite from "@/pages/AcceptInvite";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import Profile from "@/pages/Profile";
+import VerifyEmail from "@/pages/VerifyEmail";
 import AdminDashboard from "@/pages/AdminDashboard";
 import EmployeeChat from "@/pages/EmployeeChat";
 
@@ -43,6 +44,7 @@ export default function App() {
               <Route path="/register" element={<Register />} />
               <Route path="/forgot-password" element={<ForgotPassword />} />
               <Route path="/reset-password/:token" element={<ResetPassword />} />
+              <Route path="/verify-email/:token" element={<VerifyEmail />} />
               <Route path="/profile" element={<Protected><Profile /></Protected>} />
               <Route path="/accept-invite/:token" element={<AcceptInvite />} />
               <Route path="/admin/*" element={<Protected role="admin_area"><AdminDashboard /></Protected>} />
