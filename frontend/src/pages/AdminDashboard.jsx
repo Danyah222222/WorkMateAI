@@ -208,7 +208,7 @@ function DashboardHome({ setTab }) {
                 </div>
               </div>
               <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={220}>
                   <BarChart data={data.weekly_series} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
                     <XAxis dataKey="label" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
@@ -224,7 +224,7 @@ function DashboardHome({ setTab }) {
             <div className="rounded-2xl border border-border bg-card p-6" data-testid="chart-status">
               <h3 className="text-lg font-semibold mb-4">Status distribution</h3>
               <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={220}>
                   <PieChart>
                     <Pie data={data.status_distribution} dataKey="value" nameKey="name" innerRadius={50} outerRadius={80} paddingAngle={2}>
                       {data.status_distribution.map((entry, i) => (
@@ -243,7 +243,7 @@ function DashboardHome({ setTab }) {
             <div className="lg:col-span-2 rounded-2xl border border-border bg-card p-6" data-testid="chart-trend">
               <h3 className="text-lg font-semibold mb-4">Completion trend (30 days)</h3>
               <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={200}>
                   <LineChart data={data.trend_series} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
                     <XAxis dataKey="date" hide />
                     <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
@@ -257,7 +257,7 @@ function DashboardHome({ setTab }) {
             <div className="rounded-2xl border border-border bg-card p-6" data-testid="chart-priority">
               <h3 className="text-lg font-semibold mb-4">Priority</h3>
               <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minHeight={200}>
                   <BarChart data={data.priority_distribution} layout="vertical" margin={{ top: 10, right: 8, left: 20, bottom: 0 }}>
                     <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                     <YAxis type="category" dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} width={60} />

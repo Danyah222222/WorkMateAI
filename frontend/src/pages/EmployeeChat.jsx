@@ -271,7 +271,7 @@ export default function EmployeeChat() {
             <div className="text-muted-foreground truncate">{user?.email}</div>
           </div>
           <button
-            data-testid="chat-logout-btn"
+            data-testid="logout-btn"
             onClick={logout}
             className="w-full mt-1 flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-muted-foreground hover:bg-secondary hover:text-foreground"
           >
