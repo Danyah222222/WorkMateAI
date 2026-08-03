@@ -1,0 +1,77 @@
+{
+  "summary": "Verified WorkMate AI Projects/Kanban/AI-Summary/Workspace-Isolation/RBAC feature set end-to-end. Added /app/backend/tests/test_projects.py (23 tests, ALL passed) covering Projects CRUD, archive semantics (default hides, ?include_archived=true shows), DELETE detaches tasks (project_id=null, task retained), Task<->Project linkage with cross-workspace 404, Kanban<->status auto-sync in BOTH directions (kanban_status='done' -> status='completed'+completed_at set; PATCH back to 'in_progress' -> status='pending'+completed_at cleared; PATCH status='completed' -> kanban_status='done'), Project Analytics shape (progress/totals[total,completed,overdue,pending]/kanban_counts[5 columns]/members/activity), AI summary endpoint returns {summary:str, risks:[], next_actions:[], overdue_focus:[], computed:{progress,overdue_count}} using real project data, Workspace Isolation (fresh 'Isolation Test Co' owner gets 404 on other workspace's project GET/PATCH/DELETE and only sees own /projects), RBAC (employee nora -> 403 on POST/PATCH/archive/delete, GET /projects returns scoped list), plus regression on /auth/me workspace_name, /tasks/analytics, /memory, /me/stats, /settings, /employees, /team, /invitations, /documents, /feedback. Frontend: admin login -> nav-projects -> projects-tab shows Website Redesign card; new-project-btn opens project-form which successfully creates a project via API; clicking Website Redesign opens project-detail with AI summary button + Archive/Delete; overview shows project-progress-card + project-members-card + project-activity-card; kanban subtab shows kanban-board with 5 kanban-col-<key> columns and 'Design new homepage' lives in kanban-col-in_progress; PATCH /api/tasks/{id} with kanban_status='done' returns 200 and progress becomes 100% (state was later restored to in_progress via API); run-ai-summary-btn triggers ai-summary-card which populates within ~7s with real summary + risks[3] + next_actions[3] paragraphs; employee nora navigating to /admin/projects is redirected to /chat and new-project-btn is NOT rendered.",
+  "tested_scope": [
+    "backend-projects-crud",
+    "backend-projects-archive",
+    "backend-projects-delete-detach-tasks",
+    "backend-task-project-cross-workspace-404",
+    "backend-workspace-isolation-projects",
+    "backend-kanban-status-sync",
+    "backend-project-analytics",
+    "backend-project-ai-summary",
+    "backend-rbac-employee",
+    "backend-regression",
+    "frontend-projects-list",
+    "frontend-new-project-form",
+    "frontend-project-detail-overview",
+    "frontend-kanban-board",
+    "frontend-kanban-patch-integration",
+    "frontend-ai-summary",
+    "frontend-employee-restriction"
+  ],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard (initial admin load)", "issues": ["Recharts warning: 'width(-1) and height(-1) of chart should be greater than 0' repeated multiple times on first render before container has measured — cosmetic, but consider adding minWidth/minHeight on the ResponsiveContainer to silence the warning."]}
+    ]
+  },
+  "passed": [
+    "POST /api/projects -> 200 with progress=0, workspace_id, created_by set",
+    "GET /api/projects returns list with .stats {total_tasks, completed_tasks, overdue_tasks} and .progress",
+    "PATCH /api/projects/{id} persists name/description/priority/tags (verified via subsequent GET)",
+    "POST /api/projects/{id}/archive -> 200, default GET hides it, ?include_archived=true returns it with status='archived'",
+    "DELETE /api/projects/{id} -> 200; linked task still exists with project_id=null (not deleted)",
+    "POST /api/tasks with cross-workspace project_id -> 404",
+    "PATCH /api/tasks kanban_status='done' -> status='completed' + completed_at set; kanban_status='in_progress' on completed task -> status='pending' + completed_at cleared",
+    "PATCH /api/tasks status='completed' -> kanban_status='done'",
+    "GET /api/projects/{id}/analytics returns progress, totals(total/completed/overdue/pending), kanban_counts (5 keys), members, activity",
+    "POST /api/projects/{id}/ai/summary returns {summary:str, risks:[], next_actions:[], overdue_focus:[], computed:{progress, overdue_count}}",
+    "Workspace isolation: fresh 'Isolation Test Co' owner gets 404 on GET/PATCH/DELETE of admin@technova's project; own /projects list excludes admin's project",
+    "RBAC (nora): 403 on POST/PATCH/archive/DELETE /api/projects; GET /projects returns 200 scoped list",
+    "Regression 10 endpoints (auth/me/workspace_name, /tasks/analytics, /memory, /me/stats, /settings, /employees, /team, /invitations, /documents, /feedback) all 200",
+    "UI: nav-projects opens projects-tab with 'Website Redesign' card visible",
+    "UI: new-project-btn opens project-form; submitting creates a project (verified in list)",
+    "UI: project-card click opens project-detail with project-progress-card + project-members-card + project-activity-card",
+    "UI: project-subtab-kanban renders kanban-board with 5 kanban-col-<key> columns; 'Design new homepage' is in kanban-col-in_progress",
+    "UI+API: PATCH /api/tasks/{id} kanban_status='done' returns 200 and Website Redesign card progress becomes 100%",
+    "UI: run-ai-summary-btn -> ai-summary-card populates in ~7s with real summary + risks + next_actions from the actual project data",
+    "UI: employee nora hitting /admin/projects is redirected to /chat and new-project-btn is not rendered"
+  ],
+  "failed": [],
+  "test_report_links": [
+    "/app/backend/tests/test_projects.py",
+    "/app/test_reports/pytest/projects.xml"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_projects.py (new)"
+  ],
+  "success_rate": {"backend": "100% (23/23)", "frontend": "100% (all specified flows verified)"},
+  "test_credentials": "Owner: admin@technova.com / admin123 ; Employee: nora@technova.com / employee123",
+  "seed_data_creation": "test_projects.py leaves ~6 TEST_ prefixed projects and 2 ephemeral 'Isolation Test Co' workspaces in TechNova/Mongo. Also, the interactive UI test moved seeded task 'Design new homepage' to done briefly then restored it back to in_progress via API. Consider a periodic TEST_ cleanup for /api/projects and /api/tasks.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "critical_code_review_comments": [
+    "server.py is now 1763 lines (up from 1396) — well past the 700-line threshold. Projects endpoints, task kanban sync logic, and AI summary should be split into /app/backend/routers/projects.py and /app/backend/routers/tasks.py.",
+    "AdminDashboard.jsx has grown to 1871 lines and now contains ProjectsTab + ProjectDetail + KanbanBoard + AI summary card. Should be split into /pages/admin/Projects/List.jsx, Detail.jsx, Kanban.jsx.",
+    "Recharts on the admin Dashboard emits multiple 'width(-1) and height(-1)' warnings on initial mount — add explicit minWidth/minHeight or aspect ratio to ResponsiveContainer.",
+    "The kanban HTML5 drag-and-drop was NOT exercised via Playwright (per agent-to-agent note that HTML5 DnD is flaky). Kanban sync was verified via direct PATCH which is the actual integration contract, but adding a Playwright fallback with page.dispatch_event for dragstart/dragover/drop would give UI-side coverage.",
+    "AI summary endpoint blocks the request for ~7s. Consider streaming or returning 202 + polling if summaries grow larger.",
+    "The 5 pre-existing test_auth_session.py + test_webhooks_prod.py failures from iteration 6 (role-migration stale assertions) still need the main agent's attention — I did not touch them.",
+    "delete_project does the detachment via update_many({'project_id': pid}) but does NOT delete/archive project.activity docs. Long-running workspaces will accumulate orphaned activity entries pointing to deleted projects.",
+    "list_projects decorates each project with an extra db.tasks.find() inside a Python loop (N+1 pattern). For workspaces with 50+ projects consider a single $lookup aggregation."
+  ],
+  "context_for_next_testing_agent": "Backend tests: test_auth_session.py, test_personalization.py, test_projects.py, test_tasks.py, test_webhooks_prod.py, test_workspace.py. Run `pytest /app/backend/tests/ -v --junitxml=/app/test_reports/pytest/full.xml`. test_projects.py alone: ~14s, uses BASE_URL from REACT_APP_BACKEND_URL. Frontend testids relevant to Projects: nav-projects, projects-tab, project-card-<id>, new-project-btn, project-form, project-detail, project-progress-card, project-members-card, project-activity-card, project-subtab-overview / project-subtab-kanban, back-to-projects, run-ai-summary-btn, ai-summary-card, archive-project-btn, delete-project-btn, kanban-board, kanban-col-<key> (backlog/todo/in_progress/review/done), kanban-task-<id>. Kanban card click on the outer <button> requires JS .click() via page.evaluate — Playwright element.click(force=True) intermittently didn't trigger onClick due to a hover translate transition; workaround already documented in test script.",
+  "rca of the issue": "N/A — no bugs found. All backend endpoints and frontend flows behave per spec."
+}

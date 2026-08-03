@@ -25,6 +25,7 @@ export const translations = {
     // Admin
     admin_dashboard: "Dashboard",
     tasks: "Tasks",
+    projects: "Projects",
     team: "Team",
     knowledge: "Knowledge",
     employees: "Employees",
@@ -105,6 +106,7 @@ export const translations = {
     login_btn: "تسجيل الدخول",
     admin_dashboard: "لوحة التحكم",
     tasks: "المهام",
+    projects: "المشاريع",
     team: "الفريق",
     knowledge: "المعرفة",
     employees: "الموظفون",

@@ -101,6 +101,9 @@ class TaskIn(BaseModel):
     priority: Literal["low", "medium", "high"] = "medium"
     due_date: Optional[str] = None  # ISO date YYYY-MM-DD
     project: Optional[str] = None
+    project_id: Optional[str] = None
+    assigned_to: Optional[str] = None
+    kanban_status: Optional[Literal["backlog", "todo", "in_progress", "review", "done"]] = "todo"
     status: Literal["pending", "completed"] = "pending"
 
 
@@ -110,7 +113,32 @@ class TaskUpdate(BaseModel):
     priority: Optional[Literal["low", "medium", "high"]] = None
     due_date: Optional[str] = None
     project: Optional[str] = None
+    project_id: Optional[str] = None
+    assigned_to: Optional[str] = None
+    kanban_status: Optional[Literal["backlog", "todo", "in_progress", "review", "done"]] = None
     status: Optional[Literal["pending", "completed"]] = None
+
+
+class ProjectIn(BaseModel):
+    name: str
+    description: Optional[str] = None
+    status: Literal["planning", "active", "on_hold", "completed", "archived"] = "active"
+    priority: Literal["low", "medium", "high"] = "medium"
+    start_date: Optional[str] = None
+    due_date: Optional[str] = None
+    tags: List[str] = []
+    assigned_members: List[str] = []
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[Literal["planning", "active", "on_hold", "completed", "archived"]] = None
+    priority: Optional[Literal["low", "medium", "high"]] = None
+    start_date: Optional[str] = None
+    due_date: Optional[str] = None
+    tags: Optional[List[str]] = None
+    assigned_members: Optional[List[str]] = None
 
 
 # ---------------- Auth helpers ----------------
@@ -1040,14 +1068,23 @@ async def list_tasks(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     project: Optional[str] = None,
+    project_id: Optional[str] = None,
+    scope: Optional[str] = None,  # "mine" | "workspace"
     user=Depends(get_current_user),
 ):
-    q = {"user_id": user["id"]}
+    q = {"company_id": user["company_id"]}
+    # When filtering by a specific project, return all workspace tasks in that project
+    if project_id:
+        q["project_id"] = project_id
+    else:
+        # Personal scope by default: tasks I created or am assigned to
+        want_all = scope == "workspace" and user["role"] in ("owner", "admin", "manager")
+        if not want_all:
+            q["$or"] = [{"user_id": user["id"]}, {"assigned_to": user["id"]}]
     if status: q["status"] = status
     if priority: q["priority"] = priority
     if project: q["project"] = project
-    rows = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-    # decorate with overdue flag (derived)
+    rows = await db.tasks.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
     for r in rows:
         r["overdue"] = _is_overdue(r)
     return rows
@@ -1056,6 +1093,14 @@ async def list_tasks(
 @api.post("/tasks")
 async def create_task(payload: TaskIn, user=Depends(get_current_user)):
     now = _now_iso()
+    # If project_id supplied, verify it belongs to this workspace
+    if payload.project_id:
+        proj = await db.projects.find_one({"id": payload.project_id, "company_id": user["company_id"]})
+        if not proj:
+            raise HTTPException(404, "Project not found in your workspace")
+    # Sync kanban status ↔ status
+    kanban = payload.kanban_status or ("done" if payload.status == "completed" else "todo")
+    status = "completed" if kanban == "done" else payload.status
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
@@ -1065,19 +1110,22 @@ async def create_task(payload: TaskIn, user=Depends(get_current_user)):
         "priority": payload.priority,
         "due_date": payload.due_date,
         "project": (payload.project or "").strip() or None,
-        "status": payload.status,
+        "project_id": payload.project_id,
+        "assigned_to": payload.assigned_to or user["id"],
+        "kanban_status": kanban,
+        "status": status,
         "created_at": now,
         "updated_at": now,
-        "completed_at": now if payload.status == "completed" else None,
+        "completed_at": now if status == "completed" else None,
     }
     await db.tasks.insert_one(doc)
     doc.pop("_id", None)
     doc["overdue"] = _is_overdue(doc)
-    # activity log
     await db.activity.insert_one({
         "id": str(uuid.uuid4()),
         "user_id": user["id"],
         "company_id": user["company_id"],
+        "project_id": doc.get("project_id"),
         "type": "task_created",
         "task_id": doc["id"],
         "title": doc["title"],
@@ -1088,9 +1136,12 @@ async def create_task(payload: TaskIn, user=Depends(get_current_user)):
 
 @api.patch("/tasks/{task_id}")
 async def update_task(task_id: str, payload: TaskUpdate, user=Depends(get_current_user)):
-    existing = await db.tasks.find_one({"id": task_id, "user_id": user["id"]})
+    existing = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]})
     if not existing:
         raise HTTPException(404, "Task not found")
+    # RBAC: employees can only update their own tasks or ones assigned to them
+    if user["role"] == "employee" and existing.get("user_id") != user["id"] and existing.get("assigned_to") != user["id"]:
+        raise HTTPException(403, "You can only update your own tasks")
     updates = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if not updates:
         existing.pop("_id", None)
@@ -1098,34 +1149,53 @@ async def update_task(task_id: str, payload: TaskUpdate, user=Depends(get_curren
         return existing
     now = _now_iso()
     updates["updated_at"] = now
-    # Track completion transition
-    if "status" in updates:
+    # Verify project_id (if changed) belongs to workspace
+    if "project_id" in updates and updates["project_id"]:
+        proj = await db.projects.find_one({"id": updates["project_id"], "company_id": user["company_id"]})
+        if not proj:
+            raise HTTPException(404, "Project not found in your workspace")
+    # Auto-sync kanban ↔ status
+    if "kanban_status" in updates and "status" not in updates:
+        if updates["kanban_status"] == "done" and existing.get("status") != "completed":
+            updates["status"] = "completed"
+            updates["completed_at"] = now
+        elif updates["kanban_status"] != "done" and existing.get("status") == "completed":
+            updates["status"] = "pending"
+            updates["completed_at"] = None
+    if "status" in updates and "kanban_status" not in updates:
         if updates["status"] == "completed" and existing.get("status") != "completed":
             updates["completed_at"] = now
+            updates["kanban_status"] = "done"
         elif updates["status"] == "pending":
             updates["completed_at"] = None
-    await db.tasks.update_one({"id": task_id, "user_id": user["id"]}, {"$set": updates})
+            if existing.get("kanban_status") == "done":
+                updates["kanban_status"] = "todo"
+    await db.tasks.update_one({"id": task_id, "company_id": user["company_id"]}, {"$set": updates})
 
-    # Log activity for completion
     if updates.get("status") == "completed" and existing.get("status") != "completed":
         await db.activity.insert_one({
             "id": str(uuid.uuid4()),
             "user_id": user["id"],
             "company_id": user["company_id"],
+            "project_id": existing.get("project_id"),
             "type": "task_completed",
             "task_id": task_id,
             "title": existing.get("title"),
             "created_at": now,
         })
 
-    doc = await db.tasks.find_one({"id": task_id, "user_id": user["id"]}, {"_id": 0})
+    doc = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]}, {"_id": 0})
     doc["overdue"] = _is_overdue(doc)
     return doc
 
 
 @api.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, user=Depends(get_current_user)):
-    res = await db.tasks.delete_one({"id": task_id, "user_id": user["id"]})
+    # Owners/admins/managers can delete any workspace task; employees only their own
+    q = {"id": task_id, "company_id": user["company_id"]}
+    if user["role"] == "employee":
+        q["$or"] = [{"user_id": user["id"]}, {"assigned_to": user["id"]}]
+    res = await db.tasks.delete_one(q)
     if res.deleted_count == 0:
         raise HTTPException(404, "Task not found")
     return {"ok": True}
@@ -1298,6 +1368,303 @@ async def tasks_analytics(user=Depends(get_current_user)):
         "recent_activity": recent_activity,
         "insights": insights,
     }
+
+
+# ---------------- Projects ----------------
+def _project_progress(tasks: list) -> int:
+    if not tasks:
+        return 0
+    completed = sum(1 for t in tasks if t.get("status") == "completed")
+    return round((completed / len(tasks)) * 100)
+
+
+async def _user_can_view_project(user: dict, project: dict) -> bool:
+    if project["company_id"] != user["company_id"]:
+        return False
+    if user["role"] in ("owner", "admin", "manager"):
+        return True
+    # Employees: assigned to project OR have any task on it
+    if user["id"] in (project.get("assigned_members") or []):
+        return True
+    has_task = await db.tasks.find_one({
+        "project_id": project["id"],
+        "company_id": user["company_id"],
+        "$or": [{"user_id": user["id"]}, {"assigned_to": user["id"]}],
+    })
+    return bool(has_task)
+
+
+@api.get("/projects")
+async def list_projects(
+    include_archived: bool = False,
+    user=Depends(get_current_user),
+):
+    q = {"company_id": user["company_id"]}
+    if not include_archived:
+        q["status"] = {"$ne": "archived"}
+    projects = await db.projects.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Filter for employees
+    if user["role"] == "employee":
+        visible = []
+        for p in projects:
+            if await _user_can_view_project(user, p):
+                visible.append(p)
+        projects = visible
+    # Decorate each with progress + task counts
+    for p in projects:
+        tasks = await db.tasks.find(
+            {"project_id": p["id"], "company_id": user["company_id"]},
+            {"_id": 0, "status": 1, "due_date": 1},
+        ).to_list(2000)
+        for t in tasks:
+            t["overdue"] = _is_overdue(t)
+        p["stats"] = {
+            "total_tasks": len(tasks),
+            "completed_tasks": sum(1 for t in tasks if t["status"] == "completed"),
+            "overdue_tasks": sum(1 for t in tasks if t["overdue"]),
+        }
+        p["progress"] = _project_progress(tasks)
+    return projects
+
+
+@api.post("/projects")
+async def create_project(payload: ProjectIn, user=Depends(require_manager_or_above)):
+    now = _now_iso()
+    # Sanitize assigned_members: must be users in same workspace
+    assigned = payload.assigned_members or []
+    if assigned:
+        found = await db.users.find(
+            {"id": {"$in": assigned}, "company_id": user["company_id"]},
+            {"id": 1, "_id": 0},
+        ).to_list(200)
+        assigned = [u["id"] for u in found]
+    doc = {
+        "id": str(uuid.uuid4()),
+        "workspace_id": user["company_id"],
+        "company_id": user["company_id"],
+        "name": payload.name.strip()[:200],
+        "description": (payload.description or "").strip()[:5000],
+        "status": payload.status,
+        "priority": payload.priority,
+        "start_date": payload.start_date,
+        "due_date": payload.due_date,
+        "tags": [t.strip() for t in (payload.tags or []) if t and t.strip()][:20],
+        "assigned_members": assigned,
+        "created_by": user["id"],
+        "created_by_name": user["name"],
+        "created_at": now,
+        "updated_at": now,
+        "progress": 0,
+    }
+    await db.projects.insert_one(doc)
+    doc.pop("_id", None)
+    await db.activity.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "company_id": user["company_id"],
+        "project_id": doc["id"],
+        "type": "project_created",
+        "title": doc["name"],
+        "created_at": now,
+    })
+    return doc
+
+
+@api.get("/projects/{project_id}")
+async def get_project(project_id: str, user=Depends(get_current_user)):
+    project = await db.projects.find_one({"id": project_id, "company_id": user["company_id"]}, {"_id": 0})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not await _user_can_view_project(user, project):
+        raise HTTPException(403, "No access to this project")
+    tasks = await db.tasks.find(
+        {"project_id": project_id, "company_id": user["company_id"]}, {"_id": 0},
+    ).to_list(2000)
+    for t in tasks:
+        t["overdue"] = _is_overdue(t)
+    project["progress"] = _project_progress(tasks)
+    project["task_count"] = len(tasks)
+    return project
+
+
+@api.patch("/projects/{project_id}")
+async def update_project(project_id: str, payload: ProjectUpdate, user=Depends(require_manager_or_above)):
+    existing = await db.projects.find_one({"id": project_id, "company_id": user["company_id"]})
+    if not existing:
+        raise HTTPException(404, "Project not found")
+    updates = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "assigned_members" in updates:
+        found = await db.users.find(
+            {"id": {"$in": updates["assigned_members"]}, "company_id": user["company_id"]},
+            {"id": 1, "_id": 0},
+        ).to_list(200)
+        updates["assigned_members"] = [u["id"] for u in found]
+    if "tags" in updates:
+        updates["tags"] = [t.strip() for t in updates["tags"] if t and t.strip()][:20]
+    updates["updated_at"] = _now_iso()
+    await db.projects.update_one({"id": project_id, "company_id": user["company_id"]}, {"$set": updates})
+    return await db.projects.find_one({"id": project_id, "company_id": user["company_id"]}, {"_id": 0})
+
+
+@api.post("/projects/{project_id}/archive")
+async def archive_project(project_id: str, user=Depends(require_manager_or_above)):
+    res = await db.projects.update_one(
+        {"id": project_id, "company_id": user["company_id"]},
+        {"$set": {"status": "archived", "updated_at": _now_iso()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Project not found")
+    return {"ok": True}
+
+
+@api.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user=Depends(require_manager_or_above)):
+    res = await db.projects.delete_one({"id": project_id, "company_id": user["company_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Project not found")
+    # unlink tasks (do NOT delete tasks — just detach)
+    await db.tasks.update_many(
+        {"project_id": project_id, "company_id": user["company_id"]},
+        {"$set": {"project_id": None}},
+    )
+    return {"ok": True}
+
+
+@api.get("/projects/{project_id}/analytics")
+async def project_analytics(project_id: str, user=Depends(get_current_user)):
+    project = await db.projects.find_one({"id": project_id, "company_id": user["company_id"]})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not await _user_can_view_project(user, project):
+        raise HTTPException(403, "No access")
+    tasks = await db.tasks.find(
+        {"project_id": project_id, "company_id": user["company_id"]}, {"_id": 0},
+    ).to_list(2000)
+    for t in tasks:
+        t["overdue"] = _is_overdue(t)
+
+    total = len(tasks)
+    completed = sum(1 for t in tasks if t["status"] == "completed")
+    overdue = sum(1 for t in tasks if t["overdue"])
+    pending = total - completed - overdue
+
+    # Kanban breakdown
+    columns = ["backlog", "todo", "in_progress", "review", "done"]
+    kanban_counts = {c: sum(1 for t in tasks if (t.get("kanban_status") or "todo") == c) for c in columns}
+
+    # Members: fetch actual user docs
+    member_ids = set(project.get("assigned_members") or [])
+    # Also include users who have tasks in this project
+    for t in tasks:
+        if t.get("assigned_to"): member_ids.add(t["assigned_to"])
+        if t.get("user_id"): member_ids.add(t["user_id"])
+    members = []
+    if member_ids:
+        docs = await db.users.find(
+            {"id": {"$in": list(member_ids)}, "company_id": user["company_id"]},
+            {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1},
+        ).to_list(200)
+        for d in docs:
+            member_tasks = [t for t in tasks if t.get("assigned_to") == d["id"]]
+            d["stats"] = {
+                "total": len(member_tasks),
+                "completed": sum(1 for t in member_tasks if t["status"] == "completed"),
+                "pending": sum(1 for t in member_tasks if t["status"] != "completed"),
+            }
+            members.append(d)
+
+    activity = await db.activity.find(
+        {"project_id": project_id, "company_id": user["company_id"]}, {"_id": 0},
+    ).sort("created_at", -1).to_list(30)
+
+    return {
+        "progress": _project_progress(tasks),
+        "totals": {
+            "total": total,
+            "completed": completed,
+            "pending": max(pending, 0),
+            "overdue": overdue,
+        },
+        "kanban_counts": kanban_counts,
+        "members": members,
+        "activity": activity,
+    }
+
+
+@api.post("/projects/{project_id}/ai/summary")
+async def project_ai_summary(project_id: str, user=Depends(get_current_user)):
+    project = await db.projects.find_one({"id": project_id, "company_id": user["company_id"]})
+    if not project:
+        raise HTTPException(404, "Project not found")
+    if not await _user_can_view_project(user, project):
+        raise HTTPException(403, "No access")
+    tasks = await db.tasks.find(
+        {"project_id": project_id, "company_id": user["company_id"]}, {"_id": 0},
+    ).to_list(2000)
+    for t in tasks:
+        t["overdue"] = _is_overdue(t)
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    completed = sum(1 for t in tasks if t["status"] == "completed")
+    overdue_tasks = [t for t in tasks if t["overdue"]]
+    total = len(tasks)
+    progress = _project_progress(tasks)
+
+    lines = [
+        f"Project: {project['name']}",
+        f"Description: {project.get('description') or '(none)'}",
+        f"Status: {project['status']} · Priority: {project['priority']}",
+        f"Progress: {progress}% ({completed}/{total} tasks completed)",
+        f"Overdue tasks: {len(overdue_tasks)}",
+        f"Due date: {project.get('due_date') or 'unset'} · Today: {today}",
+        "",
+        "Tasks:",
+    ]
+    for t in tasks[:50]:
+        line = f"- [{t['status']}] {t['title']} (priority={t['priority']}"
+        if t.get("due_date"):
+            line += f", due={t['due_date']}"
+            if t["overdue"]:
+                line += ", OVERDUE"
+        if t.get("kanban_status"):
+            line += f", column={t['kanban_status']}"
+        line += ")"
+        lines.append(line)
+
+    context_text = "\n".join(lines)
+
+    system = (
+        "You are a concise project management assistant. Given a project snapshot, produce a JSON object with these keys:\n"
+        '{\n'
+        '  "summary": "one-paragraph project status",\n'
+        '  "risks": ["risk 1", "risk 2"],\n'
+        '  "next_actions": ["action 1", "action 2", "action 3"],\n'
+        '  "overdue_focus": ["overdue task title 1", ...]\n'
+        '}\n'
+        "Base every claim on the data provided. Be specific — reference task names and numbers. Do not invent data. Return ONLY the JSON object, no prose."
+    )
+
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=f"proj-{project_id}-{uuid.uuid4().hex[:8]}",
+            system_message=system,
+        ).with_model("anthropic", "claude-sonnet-4-5-20250929")
+        parts = []
+        async for ev in chat.stream_message(UserMessage(text=context_text)):
+            if isinstance(ev, TextDelta):
+                parts.append(ev.content)
+            elif isinstance(ev, StreamDone):
+                break
+        raw = "".join(parts).strip()
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            data = json.loads(m.group(0))
+            return {"ok": True, **data, "computed": {"progress": progress, "overdue_count": len(overdue_tasks)}}
+        return {"ok": False, "raw": raw, "computed": {"progress": progress, "overdue_count": len(overdue_tasks)}}
+    except Exception as e:
+        logger.exception("AI project summary failed")
+        raise HTTPException(502, f"AI assistant unavailable: {e}")
 
 
 # ---------------- Automations (placeholder) ----------------
