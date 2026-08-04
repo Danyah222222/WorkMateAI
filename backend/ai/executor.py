@@ -7,6 +7,8 @@ capability is executed by trusted server-side Python code:
   * min_role is enforced by the registry
   * arguments are passed through the capability handler which is expected
     to validate them and never trust identity fields
+  * WRITE capabilities never execute here — they create a pending_action
+    row that the user must confirm via /api/ai/pending-actions/{id}/confirm
 
 All calls are logged to `ai_tool_calls`.
 """
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from .capabilities import Capability, ROLE_LEVEL, get as get_capability
+from . import pending_actions as pa_mod
 
 logger = logging.getLogger("workmate.ai.executor")
 
@@ -40,7 +43,7 @@ async def execute_plan(
     db,
     conversation_id: str = "",
 ) -> List[Dict[str, Any]]:
-    """Return a list of {name, args, result, error?, latency_ms}."""
+    """Return a list of {name, args, result, error?, latency_ms, pending_action?}."""
     calls = (plan or {}).get("calls") or []
     calls = calls[:MAX_CALLS_PER_TURN]
     out: List[Dict[str, Any]] = []
@@ -51,7 +54,8 @@ async def execute_plan(
         if not isinstance(name, str) or not isinstance(args, dict):
             continue
         cap: Capability | None = get_capability(name)
-        row = {"name": name, "args": args, "result": None, "error": None, "latency_ms": 0}
+        row: Dict[str, Any] = {"name": name, "args": args, "result": None,
+                               "error": None, "latency_ms": 0, "pending_action": None}
         if cap is None:
             row["error"] = f"unknown capability: {name}"
             out.append(row)
@@ -65,6 +69,27 @@ async def execute_plan(
             await _log(db, user, conversation_id, name, args, row, cap)
             continue
 
+        # ============ WRITE CAPABILITY — create a pending action, DO NOT execute ============
+        if cap.side_effect == "write":
+            try:
+                pa = await pa_mod.create(db, user, cap, args, conversation_id=conversation_id or None)
+                row["pending_action"] = pa
+                row["result"] = {
+                    "status": "pending_confirmation",
+                    "pending_action_id": pa["id"],
+                    "preview": pa["preview"],
+                    "note": "Confirmation required. Present the details to the user and wait for Confirm/Cancel.",
+                }
+                await pa_mod._log_transition(db, pa, user, phase="confirmation_requested",
+                                             success=True)
+            except Exception as e:
+                logger.exception("failed to create pending_action")
+                row["error"] = f"{e.__class__.__name__}: {e}"
+                await _log(db, user, conversation_id, name, args, row, cap)
+            out.append(row)
+            continue
+
+        # ============ READ CAPABILITY — execute immediately ============
         t0 = time.perf_counter()
         try:
             row["result"] = await cap.handler(args, user, db)
@@ -90,6 +115,7 @@ async def _log(db, user, conversation_id, name, args, row, cap):
             "category": getattr(cap, "category", None),
             "side_effect": getattr(cap, "side_effect", "read"),
             "args": args,
+            "phase": "executed" if not row.get("error") else "failed",
             "result_summary": _summarize(row.get("result")) if not row.get("error") else None,
             "error": row.get("error"),
             "success": not row.get("error"),
@@ -123,3 +149,13 @@ def format_for_prompt(rows: List[Dict[str, Any]], max_chars: int = 6000) -> str:
         if remaining <= 0:
             break
     return "\n\n".join(parts)
+
+
+def any_pending_action(rows: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Return the first pending_action produced this turn, if any."""
+    for r in rows or []:
+        pa = r.get("pending_action")
+        if pa:
+            return pa
+    return None
+

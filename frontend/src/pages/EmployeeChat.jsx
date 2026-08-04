@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sparkles, Send, Plus, MessageSquare, LogOut, Trash2, FileText, User, ThumbsUp, ThumbsDown, CalendarCheck, LifeBuoy, Search, Brain } from "lucide-react";
+import PendingActionCard from "@/components/PendingActionCard";
 
 const SUGGESTIONS = [
   "Who is the HR manager?",
@@ -88,6 +89,7 @@ export default function EmployeeChat() {
       let acc = "";
       let currentConvId = activeId;
       let buf = "";
+      let pendingAction = null;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -106,9 +108,16 @@ export default function EmployeeChat() {
             } else if (evt.type === "delta") {
               acc += evt.content;
               setStreamText(acc);
+            } else if (evt.type === "action_pending") {
+              pendingAction = evt.pending_action;
             } else if (evt.type === "done") {
               // finalize
-              setMessages((m) => [...m, { id: evt.message_id || `a-${Date.now()}`, role: "assistant", content: acc }]);
+              setMessages((m) => [...m, {
+                id: evt.message_id || `a-${Date.now()}`,
+                role: "assistant",
+                content: acc,
+                pending_action: pendingAction || null,
+              }]);
               setStreamText("");
               loadConvs();
               // Refresh stats + memory in the background (memory is extracted server-side after the stream)
@@ -466,8 +475,17 @@ function MessageBubble({ m }) {
       <div className="h-8 w-8 flex-shrink-0 rounded-full bg-primary text-primary-foreground grid place-items-center">
         <Sparkles className="h-4 w-4" strokeWidth={2} />
       </div>
-      <div className="flex-1 space-y-3">
+      <div className="flex-1 space-y-3 min-w-0">
         <div className="text-sm whitespace-pre-wrap leading-relaxed">{body}</div>
+        {m.pending_action && (
+          <PendingActionCard
+            action={m.pending_action}
+            onResolved={(updated) => {
+              // Mutate the message in place so refresh shows the resolved state
+              m.pending_action = updated;
+            }}
+          />
+        )}
         <div className="flex items-center gap-2 flex-wrap">
           {source && (
             <div className="inline-flex items-center gap-2 text-xs rounded-md border border-border bg-card px-2.5 py-1.5 text-muted-foreground">

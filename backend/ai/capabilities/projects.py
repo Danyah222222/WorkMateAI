@@ -116,3 +116,73 @@ register(Capability(
     args_schema={"project": {"type": "string", "required": True, "description": "Project name"}},
     handler=_project_milestones, category="projects",
 ))
+
+
+# ---------------- Write capabilities (require confirmation) ----------------
+async def _archive_project(args: Dict[str, Any], user, db):
+    pid = (args.get("project_id") or "").strip()
+    name = (args.get("project") or "").strip()
+    q: Dict[str, Any] = {"company_id": user["company_id"]}
+    if pid:
+        q["id"] = pid
+    elif name:
+        q["name"] = _rx(name)
+    else:
+        return {"ok": False, "error": "project_id or project name is required"}
+    proj = await db.projects.find_one(q)
+    if not proj:
+        return {"ok": False, "error": "Project not found"}
+    if proj.get("status") == "archived":
+        return {"ok": False, "error": "Project is already archived"}
+    await db.projects.update_one(
+        {"id": proj["id"], "company_id": user["company_id"]},
+        {"$set": {"status": "archived", "archived_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "project_id": proj["id"], "name": proj.get("name"),
+            "summary": f"Project '{proj.get('name')}' archived"}
+
+
+async def _delete_project(args: Dict[str, Any], user, db):
+    pid = (args.get("project_id") or "").strip()
+    name = (args.get("project") or "").strip()
+    q: Dict[str, Any] = {"company_id": user["company_id"]}
+    if pid:
+        q["id"] = pid
+    elif name:
+        q["name"] = _rx(name)
+    else:
+        return {"ok": False, "error": "project_id or project name is required"}
+    proj = await db.projects.find_one(q)
+    if not proj:
+        return {"ok": False, "error": "Project not found"}
+    # Detach tasks (mirror existing delete_project endpoint behavior)
+    await db.tasks.update_many(
+        {"project_id": proj["id"], "company_id": user["company_id"]},
+        {"$set": {"project_id": None, "project": None}},
+    )
+    await db.projects.delete_one({"id": proj["id"], "company_id": user["company_id"]})
+    return {"ok": True, "project_id": proj["id"], "name": proj.get("name"),
+            "summary": f"Project '{proj.get('name')}' deleted"}
+
+
+# ROLE_LEVEL is imported implicitly via capabilities base; import here for clarity
+from . import ROLE_LEVEL  # noqa: E402
+
+register(Capability(
+    name="archive_project",
+    description="Archive a project so it stops appearing in active work views. Manager or higher only.",
+    args_schema={
+        "project_id": {"type": "string", "required": False, "description": "Project ID (preferred)"},
+        "project": {"type": "string", "required": False, "description": "Project name (used if no ID)"},
+    },
+    handler=_archive_project, category="projects", side_effect="write", min_role="manager",
+))
+register(Capability(
+    name="delete_project",
+    description="Permanently delete a project and detach its tasks. Admin or owner only.",
+    args_schema={
+        "project_id": {"type": "string", "required": False, "description": "Project ID (preferred)"},
+        "project": {"type": "string", "required": False, "description": "Project name (used if no ID)"},
+    },
+    handler=_delete_project, category="projects", side_effect="write", min_role="admin",
+))

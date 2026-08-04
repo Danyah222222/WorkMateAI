@@ -58,14 +58,20 @@ async def _get_user(db, email):
 def test_registry_lists_all_categories():
     from ai.capabilities import all_capabilities, available_for
     caps = all_capabilities()
-    assert len(caps) >= 20
+    assert len(caps) >= 24
     cats = {c.category for c in caps}
     assert {"employees", "knowledge", "projects", "tasks", "hr", "it"} <= cats
-    # available_for role filtering
-    emp = {"role": "employee"}
-    owner = {"role": "owner"}
-    assert len(available_for(emp)) == len(caps)  # all min_role=employee
-    assert len(available_for(owner)) == len(caps)
+    # Role-filtered visibility
+    emp_caps = available_for({"role": "employee"})
+    mgr_caps = available_for({"role": "manager"})
+    owner_caps = available_for({"role": "owner"})
+    # employees see fewer than managers (manager-only writes exist: assign_task, archive_project)
+    assert len(emp_caps) < len(mgr_caps) <= len(owner_caps) == len(caps)
+    emp_names = {c.name for c in emp_caps}
+    assert "assign_task" not in emp_names
+    assert "archive_project" not in emp_names
+    assert "delete_project" not in emp_names
+    assert "create_leave_request" in emp_names  # employees can still create leave
 
 
 # ------------------------------ Employees ------------------------------

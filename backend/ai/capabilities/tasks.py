@@ -93,3 +93,99 @@ register(Capability(
     args_schema={"limit": {"type": "integer", "required": False, "description": "Max items (default 20)"}},
     handler=_completed, category="tasks",
 ))
+
+
+# ---------------- Write capabilities (require confirmation) ----------------
+_TASK_STATUSES = {"pending", "completed"}
+_KANBAN_STATUSES = {"backlog", "todo", "in_progress", "review", "done"}
+
+
+async def _update_task_status(args: Dict[str, Any], user, db):
+    task_id = (args.get("task_id") or "").strip()
+    new_status = (args.get("status") or "").strip().lower() or None
+    new_kanban = (args.get("kanban_status") or "").strip().lower() or None
+    if not task_id:
+        return {"ok": False, "error": "task_id is required"}
+    if not new_status and not new_kanban:
+        return {"ok": False, "error": "provide status ('pending'|'completed') or kanban_status"}
+    task = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]})
+    if not task:
+        return {"ok": False, "error": "Task not found"}
+    # Employees can only touch their own tasks
+    if ROLE_LEVEL.get(user.get("role", "employee"), 0) < ROLE_LEVEL["manager"]:
+        if task.get("user_id") != user["id"] and task.get("assigned_to") != user["id"]:
+            return {"ok": False, "error": "You can only update tasks assigned to you"}
+    updates = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if new_status:
+        if new_status not in _TASK_STATUSES:
+            return {"ok": False, "error": f"Invalid status. Use one of: {sorted(_TASK_STATUSES)}"}
+        updates["status"] = new_status
+        # Keep kanban in sync when task is marked completed / uncompleted
+        if new_status == "completed":
+            updates["kanban_status"] = "done"
+        elif new_status == "pending" and task.get("kanban_status") == "done":
+            updates["kanban_status"] = "in_progress"
+    if new_kanban:
+        if new_kanban not in _KANBAN_STATUSES:
+            return {"ok": False, "error": f"Invalid kanban_status. Use one of: {sorted(_KANBAN_STATUSES)}"}
+        updates["kanban_status"] = new_kanban
+        updates["status"] = "completed" if new_kanban == "done" else "pending"
+    await db.tasks.update_one(
+        {"id": task_id, "company_id": user["company_id"]},
+        {"$set": updates},
+    )
+    return {"ok": True, "task_id": task_id, "changes": updates,
+            "summary": f"Task '{task.get('title')}' updated"}
+
+
+async def _assign_task(args: Dict[str, Any], user, db):
+    task_id = (args.get("task_id") or "").strip()
+    ident = (args.get("assignee") or args.get("email") or "").strip().lower()
+    if not task_id or not ident:
+        return {"ok": False, "error": "task_id and assignee (email or user id) are required"}
+    task = await db.tasks.find_one({"id": task_id, "company_id": user["company_id"]})
+    if not task:
+        return {"ok": False, "error": "Task not found"}
+    # Assignment is a management action — managers+ only.
+    if ROLE_LEVEL.get(user.get("role", "employee"), 0) < ROLE_LEVEL["manager"]:
+        return {"ok": False, "error": "Only managers and above can reassign tasks"}
+    # Resolve assignee — accept email or user id, must be in same workspace
+    target = await db.users.find_one(
+        {"company_id": user["company_id"],
+         "$or": [{"email": ident}, {"id": ident}]},
+        {"_id": 0, "id": 1, "email": 1, "name": 1},
+    )
+    if not target:
+        return {"ok": False, "error": f"No workspace member matches '{ident}'"}
+    await db.tasks.update_one(
+        {"id": task_id, "company_id": user["company_id"]},
+        {"$set": {"assigned_to": target["id"],
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "task_id": task_id, "assigned_to": target["id"],
+            "assignee_email": target["email"], "assignee_name": target["name"],
+            "summary": f"Task assigned to {target['name']}"}
+
+
+register(Capability(
+    name="update_task_status",
+    description=(
+        "Mark a task as completed or pending, or move it to a kanban column. "
+        "Employees can only update tasks assigned to them; managers can update any."
+    ),
+    args_schema={
+        "task_id": {"type": "string", "required": True, "description": "Task ID"},
+        "status": {"type": "string", "required": False, "description": "pending | completed"},
+        "kanban_status": {"type": "string", "required": False, "description": "backlog | todo | in_progress | review | done"},
+    },
+    handler=_update_task_status, category="tasks", side_effect="write",
+))
+register(Capability(
+    name="assign_task",
+    description="Assign a task to a workspace member (by email or user id). Manager or higher only.",
+    args_schema={
+        "task_id": {"type": "string", "required": True, "description": "Task ID"},
+        "assignee": {"type": "string", "required": True, "description": "Assignee email or user id"},
+    },
+    handler=_assign_task, category="tasks", side_effect="write", min_role="manager",
+))

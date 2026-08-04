@@ -1,75 +1,78 @@
 # WorkMate AI — Product Requirements Document
 
-## Original Problem Statement
-Build "WorkMate AI", a modern full-stack web application serving as a private AI workplace assistant for companies. Evolved from an MVP demo to a Production Multi-tenant SaaS platform, and now (Feb 2026) into an Enterprise AI Agent with a capability layer.
+## Current State (Feb 2026)
+An enterprise multi-tenant SaaS AI assistant with:
+- JWT auth, RBAC (owner/admin/manager/employee), invitations, password reset, email verification
+- Streaming Claude chat with per-user memory extraction
+- Kanban projects + tasks + task comments + CSV export (backend)
+- **AI Capability Layer** — 28 capabilities across 6 categories (employees, knowledge, projects, tasks, hr, it), Haiku planner + Sonnet responder
+- **AI Action Confirmation Workflow** (Feb 2026, NEW) — every write capability requires explicit user confirmation before execution
 
 ## Explicit User Constraints
-- Resend integration: graceful fallback (send when `RESEND_API_KEY` set, otherwise surface dev_token/link in UI)
-- Password policy: min 8 chars + letter + digit
-- Email-change verification: link to NEW email, single-use, 2h expiry
-- DO NOT redesign existing UI; DO NOT rebuild existing AI features; reuse chat streaming
-- RAG deferred to a later milestone — Feb 2026 milestone is the capability layer only
-- SKIPPED: Task attachments, Calendar views, PDF exports
+- Do NOT redesign UI; reuse existing chat streaming
+- Resend graceful fallback (send when key set, else surface dev_token)
+- Password policy min 8 chars + letter + digit
+- Task attachments, calendar view, PDF exports remain SKIPPED
+- RAG deferred to a later milestone
 
-## Architecture
-- **Frontend**: React 19, Tailwind, Shadcn UI, React Router 7, Axios
-- **Backend**: FastAPI + Motor + slowapi + optional Resend
-- **DB**: MongoDB (UUID4 string IDs)
-- **AI**: Claude Sonnet 4.5 (responder) + Claude Haiku 4.5 (planner + memory) via Emergent Universal Key
-- **AI Capability Layer** (new, Feb 2026):
-  - `backend/ai/capabilities/*.py` — 24 registered capabilities across 6 categories
-  - `backend/ai/planner.py` — Haiku picks 0–3 capabilities per turn (JSON-only)
-  - `backend/ai/executor.py` — runs plan under authenticated user, enforces `min_role`, scopes by `company_id`, logs each call
-  - Integrated into existing `/api/chat/stream` — planner runs → executor runs → results injected as `=== CAPABILITY RESULTS ===` block into existing Sonnet prompt
-  - SSE stream emits new `{"type":"capability", ...}` events (current frontend safely ignores unknown types)
+## AI Confirmation Workflow (Feb 2026)
+- New collection `pending_actions`: {id, conversation_id, user_id, company_id, capability_name, args, preview{label,category,side_effect,args,missing[]}, status: pending|confirmed|executed|cancelled|failed, created_at, resolved_at, result, error, message_id}
+- Executor detects `cap.side_effect == "write"` → creates a `pending_action` row instead of running the capability
+- SSE stream emits `{"type":"action_pending", "pending_action":{...}}` after the response header
+- Chat message stores `pending_action_id`; `GET /conversations/{id}/messages` enriches messages with the current pending_action doc so refresh restores card state
+- Idempotency: state transitions use atomic `find_one_and_update({status:"pending"})` — duplicate confirm/cancel can never double-execute
+- Confirm re-checks role (defense-in-depth), whitelists edited_args to declared arg keys, runs the SAME capability handler (no logic duplication)
+- All state changes audit-logged to `ai_tool_calls.phase = confirmation_requested | confirmed_executed | cancelled | failed`
+- Semantics:
+  - confirm on pending → execute (200)
+  - confirm on already-executed → returns same record (200 idempotent)
+  - confirm on cancelled/failed → 409
+  - cancel on pending → cancelled (200)
+  - cancel on non-pending → 409
 
-## Registered Capabilities (24)
-- **employees (6)**: search_employee_by_name, search_employees_by_department, search_employees_by_role, find_manager, find_employee_email, find_employee_phone (truthfully returns "not stored")
-- **knowledge (3)**: search_documents, search_company_policies, search_hr_handbook
-- **projects (4)**: search_projects, list_project_members, list_project_deadlines, list_project_milestones
-- **tasks (4)**: search_tasks, my_tasks, overdue_tasks, completed_tasks (managers+ see all; employees see own)
-- **hr (4)**: create_leave_request (persists to `leave_requests` + n8n fire-and-forget), check_leave_policy, explain_hr_procedure, list_my_leave_requests
-- **it (3)**: create_it_ticket (persists to `it_tickets` + n8n fire-and-forget), check_ticket_status, search_it_documentation
+## Write Capabilities (all require confirmation)
+- `create_leave_request` (employee+) — validates ISO dates and range, persists to `leave_requests`, fires n8n webhook
+- `create_it_ticket` (employee+) — persists to `it_tickets`, fires n8n webhook
+- `update_task_status` (employee for own tasks, manager+ for any) — status/kanban_status, auto-syncs both
+- `assign_task` (manager+) — resolves assignee by email or user_id in workspace
+- `archive_project` (manager+) — sets status=archived
+- `delete_project` (admin+) — deletes project, detaches tasks (dangerous card variant)
 
-## Security & Isolation Guarantees
-- Every capability accepts `(args, current_user, db)` — `company_id` is always taken from the authenticated JWT user, NEVER from LLM-supplied args
-- `min_role` gate enforced in executor (`ROLE_LEVEL`); forbidden calls return an error the LLM sees and reports honestly
-- Task/ticket scoping: employees see own only; managers+ see workspace-wide
-- All calls audit-logged to `ai_tool_calls` (name, category, side_effect, args, result_summary, error, success, latency_ms, user_role)
-- Framework designed for easy extension — add a module, call `register(Capability(...))`
+## New Endpoints
+- `GET /api/ai/pending-actions/{id}` — owner or manager+ in workspace
+- `GET /api/ai/pending-actions?conversation_id=&limit=` — caller's own
+- `POST /api/ai/pending-actions/{id}/confirm` — rate limited 30/min, atomic transition, executes handler
+- `POST /api/ai/pending-actions/{id}/cancel` — rate limited 60/min, atomic transition
 
-## What's Been Implemented (dated)
-- Feb 2026 — Password recovery E2E tested
-- Feb 2026 — Production User Account System (24 backend + 18 frontend scenarios pass)
-- Feb 2026 — **AI Capability Layer** (13/13 unit + integration tests pass; two live SSE integration tests confirm planner correctly fires for data questions and skips for greetings)
+## Frontend
+- New `components/PendingActionCard.jsx` — inline card in assistant message bubble with 4 visual states (pending / executed / cancelled / failed). Confirm/Cancel disabled while busy; buttons hidden when non-pending; special destructive variant for `delete_project`
+- `EmployeeChat.jsx` — captures `action_pending` SSE event, attaches to next assistant message; renders `PendingActionCard` inline; on refresh uses `message.pending_action` from the enriched messages payload
+- No layout changes to any page
 
-## New Collections (Feb 2026)
-- `ai_tool_calls` — one row per capability invocation
-- `leave_requests` — persisted so `list_my_leave_requests` + `check_leave_policy` work without n8n
-- `it_tickets` — persisted so `check_ticket_status` works without n8n
+## Verified (this milestone)
+- 21/21 pytest pass (8 new confirmation tests + 13 existing capability tests)
+- Live UI smoke: leave-request confirmation E2E — card rendered with fields, Confirm transitioned to executed, buttons removed to prevent duplicates
+- Cross-user, role-gate, cancel-after-cancel, confirm-after-cancel, confirm-after-executed all covered
 
 ## Prioritized Backlog
 
-### P0 (Next Up)
-- Frontend "tool chips" — render the new `capability` SSE events as subtle chips under assistant messages
-- Task Comments UI in AdminDashboard modal (backend ready)
-- CSV Export button in AdminDashboard (backend ready)
+### P0 Next
+- Enterprise RAG (chunking + embeddings + vector search + `[SRC n]` citations)
+- Admin "AI Console" tab: filter `ai_tool_calls` and `pending_actions`, see approvals for manager-only actions
 
 ### P1
-- **RAG** — deferred milestone: chunking + embeddings + vector index (Atlas Vector Search / Qdrant) + `[SRC n]` citations. Replaces `search_documents`, `search_company_policies`, `search_hr_handbook`, `search_it_documentation` with true semantic search behind the same capability interface
-- Confirmation gate UI for write capabilities (`create_leave_request`, `create_it_ticket`)
-- Multi-hop agent loop (allow planner to see the first round's results and make a second call)
-- Admin "AI Console" tab: view `ai_tool_calls` with filters
-- Document-level ACLs (`visibility` field + retrieval-time filter)
-- Refactor `AdminDashboard.jsx` (~2000 LOC) and `server.py` (~2200 LOC) into modules
+- Manager approval flow for employee-created write actions (currently self-service)
+- "Edit before confirming" inline field editing in the card
+- Document-level ACLs (`visibility` on documents, applied at retrieval time)
+- Refactor `AdminDashboard.jsx` and `server.py` into modules
 
 ### P2
-- Provider failover, budget/cost tracking (`ai_usage`), prompt-injection sanitizer
+- Provider failover, budget/cost tracking, prompt-injection sanitizer
 - Move JWT to httpOnly cookies
 
 ## Env vars
-- Required: `MONGO_URL`, `DB_NAME`, `EMERGENT_LLM_KEY`, `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_HOURS`
-- Optional: `RESEND_API_KEY`, `SENDER_EMAIL`, `SENDER_NAME`, `APP_URL`, `N8N_LEAVE_WEBHOOK`, `N8N_IT_WEBHOOK`
+Required: `MONGO_URL`, `DB_NAME`, `EMERGENT_LLM_KEY`, `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_HOURS`
+Optional: `RESEND_API_KEY`, `SENDER_EMAIL`, `SENDER_NAME`, `APP_URL`, `N8N_LEAVE_WEBHOOK`, `N8N_IT_WEBHOOK`
 
 ## Test Credentials
 See `/app/memory/test_credentials.md`
