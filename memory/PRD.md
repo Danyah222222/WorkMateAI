@@ -1,85 +1,75 @@
 # WorkMate AI — Product Requirements Document
 
 ## Original Problem Statement
-Build "WorkMate AI", a modern full-stack web application serving as a private AI workplace assistant for companies. Evolved from an MVP demo to a Production Multi-tenant SaaS platform.
-
-## Core Requirements
-- Multi-tenant workspace isolation with role-based access (Owner, Admin, Manager, Employee)
-- Admin Dashboard: knowledge (PDF/CSV uploads), team members, tasks, and Kanban projects
-- Employee Chat with Claude Sonnet 4.5 (streaming, history, memory extraction)
-- n8n workflow automations (Leave Request, IT Support) triggered from chat
-- Production-ready user account system (Feb 2026)
+Build "WorkMate AI", a modern full-stack web application serving as a private AI workplace assistant for companies. Evolved from an MVP demo to a Production Multi-tenant SaaS platform, and now (Feb 2026) into an Enterprise AI Agent with a capability layer.
 
 ## Explicit User Constraints
-- Resend integration: **graceful fallback pattern** — if `RESEND_API_KEY` is set in `.env`, emails are sent; otherwise the token/verification link is returned in the API response and shown in the UI. No key is required today
-- Password policy (backend `validate_password_strength`): min 8 chars + must contain letter + digit
-- Email-change verification: link is sent to the NEW email; change is applied only when the link is clicked (single-use token, 2h expiry)
-- Welcome email is sent on register and accept-invite (no-op when Resend isn't configured)
-- SKIPPED (still): Task attachments, Calendar views, PDF exports
-- Do NOT redesign existing UI — integrate additions into the current layout
+- Resend integration: graceful fallback (send when `RESEND_API_KEY` set, otherwise surface dev_token/link in UI)
+- Password policy: min 8 chars + letter + digit
+- Email-change verification: link to NEW email, single-use, 2h expiry
+- DO NOT redesign existing UI; DO NOT rebuild existing AI features; reuse chat streaming
+- RAG deferred to a later milestone — Feb 2026 milestone is the capability layer only
+- SKIPPED: Task attachments, Calendar views, PDF exports
 
 ## Architecture
-- Frontend: React 19, Tailwind, Shadcn UI, React Router 7, Recharts, Axios
-- Backend: FastAPI (async), Motor, JWT (bcrypt), slowapi (rate limiting), Resend SDK (optional)
-- DB: MongoDB — schemaless, Pydantic-validated, UUID4 string IDs
-- LLM: Claude Sonnet 4.5 via Emergent Universal Key
+- **Frontend**: React 19, Tailwind, Shadcn UI, React Router 7, Axios
+- **Backend**: FastAPI + Motor + slowapi + optional Resend
+- **DB**: MongoDB (UUID4 string IDs)
+- **AI**: Claude Sonnet 4.5 (responder) + Claude Haiku 4.5 (planner + memory) via Emergent Universal Key
+- **AI Capability Layer** (new, Feb 2026):
+  - `backend/ai/capabilities/*.py` — 24 registered capabilities across 6 categories
+  - `backend/ai/planner.py` — Haiku picks 0–3 capabilities per turn (JSON-only)
+  - `backend/ai/executor.py` — runs plan under authenticated user, enforces `min_role`, scopes by `company_id`, logs each call
+  - Integrated into existing `/api/chat/stream` — planner runs → executor runs → results injected as `=== CAPABILITY RESULTS ===` block into existing Sonnet prompt
+  - SSE stream emits new `{"type":"capability", ...}` events (current frontend safely ignores unknown types)
 
-## What's Been Implemented (Feb 2026)
-- Multi-tenant SaaS foundation: workspaces, invitations, role-based access
-- AI chat with source-grounded answers, thumbs feedback, personalized memory
-- n8n webhook proxies (Leave, IT Support)
-- Kanban Projects, drag-and-drop, auto-status
-- Productivity dashboard with charts
-- Rate limiting (slowapi), MongoDB indexes
-- Task comments backend, CSV export backend, notifications UI
-- Password recovery (forgot/reset) — E2E tested
-- **Feb 2026 — Production User Account System (COMPLETE, backend 24/24 + frontend 18/18)**
-  - Password strength enforced on register / accept-invite / change / reset (8+ chars, letter + digit)
-  - Live `PasswordStrength` meter component on all password entry forms
-  - Forgot / reset password with Resend-or-dev-token fallback
-  - Change password (audit logged as `password_changed`)
-  - Change email with verification link to NEW address (audit logged as `email_change_requested` → `email_changed`), pending-email banner, cancel-change, single-use tokens
-  - Profile page shows: avatar upload, display name edit, workspace, role, member-since date, current email, pending-email banner
-  - New `/verify-email/:token` page
-  - `email_service.py` module with graceful Resend fallback and professional HTML templates (welcome, password reset, email-change verification)
-  - Audit log entries for `password_changed`, `password_reset_requested`, `email_change_requested`, `email_changed`, `profile_updated`
-  - AuthContext 401 interceptor now whitelists change-password / email-change / login so form-level 401s don't kick users out
-  - Mobile responsive polish on all auth pages + Profile; `aria-hidden` on decorative icons, `aria-label` on icon buttons, `noValidate` on forms
+## Registered Capabilities (24)
+- **employees (6)**: search_employee_by_name, search_employees_by_department, search_employees_by_role, find_manager, find_employee_email, find_employee_phone (truthfully returns "not stored")
+- **knowledge (3)**: search_documents, search_company_policies, search_hr_handbook
+- **projects (4)**: search_projects, list_project_members, list_project_deadlines, list_project_milestones
+- **tasks (4)**: search_tasks, my_tasks, overdue_tasks, completed_tasks (managers+ see all; employees see own)
+- **hr (4)**: create_leave_request (persists to `leave_requests` + n8n fire-and-forget), check_leave_policy, explain_hr_procedure, list_my_leave_requests
+- **it (3)**: create_it_ticket (persists to `it_tickets` + n8n fire-and-forget), check_ticket_status, search_it_documentation
+
+## Security & Isolation Guarantees
+- Every capability accepts `(args, current_user, db)` — `company_id` is always taken from the authenticated JWT user, NEVER from LLM-supplied args
+- `min_role` gate enforced in executor (`ROLE_LEVEL`); forbidden calls return an error the LLM sees and reports honestly
+- Task/ticket scoping: employees see own only; managers+ see workspace-wide
+- All calls audit-logged to `ai_tool_calls` (name, category, side_effect, args, result_summary, error, success, latency_ms, user_role)
+- Framework designed for easy extension — add a module, call `register(Capability(...))`
+
+## What's Been Implemented (dated)
+- Feb 2026 — Password recovery E2E tested
+- Feb 2026 — Production User Account System (24 backend + 18 frontend scenarios pass)
+- Feb 2026 — **AI Capability Layer** (13/13 unit + integration tests pass; two live SSE integration tests confirm planner correctly fires for data questions and skips for greetings)
+
+## New Collections (Feb 2026)
+- `ai_tool_calls` — one row per capability invocation
+- `leave_requests` — persisted so `list_my_leave_requests` + `check_leave_policy` work without n8n
+- `it_tickets` — persisted so `check_ticket_status` works without n8n
 
 ## Prioritized Backlog
 
 ### P0 (Next Up)
-- Task Comments UI in AdminDashboard task detail modal (backend ready)
-- CSV Export button in AdminDashboard Projects/Tasks tab (backend ready)
+- Frontend "tool chips" — render the new `capability` SSE events as subtle chips under assistant messages
+- Task Comments UI in AdminDashboard modal (backend ready)
+- CSV Export button in AdminDashboard (backend ready)
 
 ### P1
-- Activity/Audit history UI tab (backend `activity` collection is rich now)
-- Refactor `AdminDashboard.jsx` (~2000 LOC) and `server.py` (~2200 LOC) into sub-modules for maintainability
-- Expose invite token in `POST /api/invites` dev response to unblock E2E for accept-invite policy
-- Consider `X-Forwarded-For`-aware key_func for slowapi (per-user limits behind ingress)
+- **RAG** — deferred milestone: chunking + embeddings + vector index (Atlas Vector Search / Qdrant) + `[SRC n]` citations. Replaces `search_documents`, `search_company_policies`, `search_hr_handbook`, `search_it_documentation` with true semantic search behind the same capability interface
+- Confirmation gate UI for write capabilities (`create_leave_request`, `create_it_ticket`)
+- Multi-hop agent loop (allow planner to see the first round's results and make a second call)
+- Admin "AI Console" tab: view `ai_tool_calls` with filters
+- Document-level ACLs (`visibility` field + retrieval-time filter)
+- Refactor `AdminDashboard.jsx` (~2000 LOC) and `server.py` (~2200 LOC) into modules
 
 ### P2
-- Move JWT out of localStorage (httpOnly cookies) to reduce XSS surface
+- Provider failover, budget/cost tracking (`ai_usage`), prompt-injection sanitizer
+- Move JWT to httpOnly cookies
 
-### Deferred (Explicitly Skipped by User)
-- Task attachments, Calendar view, PDF exports
-
-## Key API Endpoints (User Account)
-- `POST /api/auth/register` — 8+ chars, letter + digit; sends welcome email
-- `POST /api/auth/login`
-- `POST /api/auth/forgot-password` → `{ok, email_sent, dev_token?}`
-- `POST /api/auth/reset-password` — validates single-use token, applies strength policy
-- `POST /api/auth/change-password` — verifies current, applies strength policy, audit-logged
-- `POST /api/auth/accept-invite` — sends welcome email
-- `GET /api/profile` — returns identity + `created_at` + `pending_email` + `email_delivery_enabled`
-- `PATCH /api/profile` — name + avatar
-- `POST /api/profile/email/request-change` — sends verification link (or returns dev_token)
-- `POST /api/profile/email/verify` — applies email change (single-use)
-- `POST /api/profile/email/cancel-change` — invalidates any pending change
+## Env vars
+- Required: `MONGO_URL`, `DB_NAME`, `EMERGENT_LLM_KEY`, `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_HOURS`
+- Optional: `RESEND_API_KEY`, `SENDER_EMAIL`, `SENDER_NAME`, `APP_URL`, `N8N_LEAVE_WEBHOOK`, `N8N_IT_WEBHOOK`
 
 ## Test Credentials
-See `/app/memory/test_credentials.md` (admin@technova.com / admin123 remains authoritative)
-
-## Env vars (backend/.env)
-- Required: `MONGO_URL`, `DB_NAME`, `EMERGENT_LLM_KEY`, `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_HOURS`
-- Optional (email delivery): `RESEND_API_KEY`, `SENDER_EMAIL`, `SENDER_NAME`, `APP_URL`
+See `/app/memory/test_credentials.md`
